@@ -12,6 +12,7 @@
   "version": 2,
   "recipeOverrides": {
     "reviewBackends": [
+      "codex",
       "agent"
     ],
     "maxTicketsPerSession": 5,
