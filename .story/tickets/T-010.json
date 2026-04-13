@@ -1,0 +1,14 @@
+{
+  "blockedBy": [
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Build src/merger/dedup.ts. When multiple lenses report the same finding (same file, same line, same category), merge into one finding with the highest confidence and note contributing lenses. Merge by (file, line, category) tuple.",
+  "id": "T-010",
+  "order": 10,
+  "phase": "merger",
+  "status": "open",
+  "title": "Cross-lens deduplication",
+  "type": "task"
+}

@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-010",
+    "T-011",
+    "T-012"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Build src/merger/verdict.ts. Deterministic verdict from findings: any blocking finding -> reject, any major -> revise, only minor/suggestions -> approve. Count by severity. Recommend next round based on blocking/major count. Same findings always produce same verdict.",
+  "id": "T-013",
+  "order": 40,
+  "phase": "merger",
+  "status": "open",
+  "title": "Verdict computation",
+  "type": "task"
+}

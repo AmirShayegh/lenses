@@ -1,0 +1,30 @@
+{
+  "features": {
+    "handovers": true,
+    "issues": true,
+    "reviews": true,
+    "roadmap": true,
+    "tickets": true
+  },
+  "language": "typescript",
+  "project": "Lenses",
+  "type": "npm",
+  "version": 2,
+  "recipeOverrides": {
+    "reviewBackends": [
+      "agent"
+    ],
+    "maxTicketsPerSession": 5,
+    "handoverInterval": 3,
+    "stages": {
+      "WRITE_TESTS": {
+        "enabled": true,
+        "command": "npm test"
+      },
+      "TEST": {
+        "enabled": true,
+        "command": "npm test"
+      }
+    }
+  }
+}

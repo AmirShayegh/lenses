@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-006",
+    "T-007"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Implement the start tool: accept stage, artifact, changedFiles, ticketDescription, reviewRound, priorDeferrals. Call registry for lens selection, call prompt builder for each lens, check cache for prior results, return { reviewId, agents[], cached[] }.",
+  "id": "T-008",
+  "order": 10,
+  "phase": "tools",
+  "status": "open",
+  "title": "lens_review_start tool implementation",
+  "type": "task"
+}

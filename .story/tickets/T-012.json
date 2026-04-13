@@ -1,0 +1,14 @@
+{
+  "blockedBy": [
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Build src/merger/tension.ts. Detect when two lenses recommend conflicting approaches (e.g. security wants strict validation, performance wants minimal overhead). Report as tensions with both sides, don't resolve -- let the user decide.",
+  "id": "T-012",
+  "order": 30,
+  "phase": "merger",
+  "status": "open",
+  "title": "Cross-lens tension detection",
+  "type": "task"
+}

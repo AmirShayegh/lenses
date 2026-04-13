@@ -1,0 +1,14 @@
+{
+  "blockedBy": [
+    "T-018"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Update claudestory's setup-skill command to: check if @amirshayegh/lenses is installed globally, install if missing, register via 'claude mcp add lenses -s user -- lenses --mcp'. Add --no-lenses flag to skip.",
+  "id": "T-017",
+  "order": 20,
+  "phase": "integration",
+  "status": "open",
+  "title": "setup-skill registration -- install and register lenses MCP",
+  "type": "task"
+}

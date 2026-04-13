@@ -1,0 +1,14 @@
+{
+  "blockedBy": [
+    "T-009"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Update review-lenses.md skill documentation to describe the new two-hop flow (lens_review_start + lens_review_complete) instead of the old prepare/synthesize/judge chain. Keep Path B fallback for when MCP is unavailable.",
+  "id": "T-019",
+  "order": 40,
+  "phase": "integration",
+  "status": "open",
+  "title": "Update /story review-lenses skill docs for two-hop flow",
+  "type": "chore"
+}

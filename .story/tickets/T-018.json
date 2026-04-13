@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-009",
+    "T-013"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Publish @amirshayegh/lenses to npm. Verify standalone install works: npm install -g @amirshayegh/lenses && claude mcp add lenses -s user -- lenses --mcp. Add as npm dependency of @anthropologies/claudestory.",
+  "id": "T-018",
+  "order": 30,
+  "phase": "integration",
+  "status": "open",
+  "title": "npm publish and standalone CLI",
+  "type": "task"
+}

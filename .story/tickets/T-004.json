@@ -1,0 +1,14 @@
+{
+  "blockedBy": [
+    "T-001"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Port shared-preamble.md from claudestory into src/lenses/prompts/shared-preamble.ts as a template literal. Parameterize: stage, artifact, ticket description, review round, prior deferrals.",
+  "id": "T-004",
+  "order": 10,
+  "phase": "lenses",
+  "status": "open",
+  "title": "Port shared preamble prompt",
+  "type": "task"
+}

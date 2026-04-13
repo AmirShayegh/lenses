@@ -1,0 +1,37 @@
+{
+  "blockers": [],
+  "date": "2026-04-13",
+  "phases": [
+    {
+      "description": "Project setup, MCP server skeleton, schema definitions, build pipeline",
+      "id": "foundation",
+      "label": "PHASE 0",
+      "name": "Foundation"
+    },
+    {
+      "description": "Port 8 lens prompts from claudestory, build activation registry",
+      "id": "lenses",
+      "label": "PHASE 1",
+      "name": "Lens Prompts + Registry"
+    },
+    {
+      "description": "lens_review_start and lens_review_complete MCP tools",
+      "id": "tools",
+      "label": "PHASE 2",
+      "name": "Two-Hop Tools"
+    },
+    {
+      "description": "Deduplication, confidence filtering, blocking policy, tension detection, verdict computation",
+      "id": "merger",
+      "label": "PHASE 3",
+      "name": "Merger + Verdict"
+    },
+    {
+      "description": "claudestory integration, setup-skill registration, npm publish, standalone CLI",
+      "id": "integration",
+      "label": "PHASE 4",
+      "name": "Integration + Distribution"
+    }
+  ],
+  "title": "Lenses"
+}

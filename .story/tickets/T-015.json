@@ -1,0 +1,14 @@
+{
+  "blockedBy": [
+    "T-009"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Build src/cache/lens-cache.ts. Cache individual lens results keyed by (lens, artifact hash). If the same artifact is reviewed twice, return cached findings instead of re-running the lens. Return cached findings in hop 1 so agent skips spawning that lens.",
+  "id": "T-015",
+  "order": 60,
+  "phase": "merger",
+  "status": "open",
+  "title": "Per-lens result caching",
+  "type": "task"
+}

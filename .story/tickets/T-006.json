@@ -1,0 +1,14 @@
+{
+  "blockedBy": [
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Build src/lenses/registry.ts. Given stage (PLAN_REVIEW/CODE_REVIEW), changed file extensions, and optional user config, return which lenses to activate and which model each should use. Default: all 8 for plans, file-type-filtered for code. Security and concurrency default to opus, others sonnet.",
+  "id": "T-006",
+  "order": 30,
+  "phase": "lenses",
+  "status": "open",
+  "title": "Lens activation registry -- select lenses by stage, file types, config",
+  "type": "task"
+}

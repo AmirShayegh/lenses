@@ -1,0 +1,14 @@
+{
+  "blockedBy": [
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Port all 8 lens prompts from claudestory (security, error-handling, clean-code, performance, api-design, concurrency, test-quality, accessibility) into src/lenses/prompts/ as TypeScript template literals. Each prompt must be self-contained when combined with the shared preamble.",
+  "id": "T-005",
+  "order": 20,
+  "phase": "lenses",
+  "status": "open",
+  "title": "Port 8 lens prompts",
+  "type": "task"
+}

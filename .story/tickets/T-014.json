@@ -1,0 +1,14 @@
+{
+  "blockedBy": [
+    "T-009"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Build src/cache/session.ts. Store review session state (reviewId, findings per round, deferred findings) in temp directory. Enable round 2+ to reference prior findings and track what was deferred vs fixed. Clean up stale sessions.",
+  "id": "T-014",
+  "order": 50,
+  "phase": "merger",
+  "status": "open",
+  "title": "Session cache -- round-to-round continuity",
+  "type": "task"
+}

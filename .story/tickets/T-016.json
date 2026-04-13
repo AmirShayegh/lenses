@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-009",
+    "T-013"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Update claudestory's autonomous guide CODE_REVIEW and PLAN_REVIEW stages to call lens_review_start + lens_review_complete instead of the current prepare/synthesize/judge chain. Deprecate the old tools.",
+  "id": "T-016",
+  "order": 10,
+  "phase": "integration",
+  "status": "open",
+  "title": "claudestory integration -- update autonomous guide to use lenses MCP",
+  "type": "task"
+}

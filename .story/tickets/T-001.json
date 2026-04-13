@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Initialize npm package @amirshayegh/lenses. ESM, Node 20+, strict TypeScript. tsup for build, vitest for tests. Add .gitignore, .editorconfig. First npm run build and npm test must pass.",
+  "id": "T-001",
+  "order": 10,
+  "phase": "foundation",
+  "status": "open",
+  "title": "TypeScript project setup -- package.json, tsup, vitest, tsconfig",
+  "type": "task"
+}

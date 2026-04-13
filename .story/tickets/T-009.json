@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-008"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-04-13",
+  "description": "Implement the complete tool: accept reviewId and array of { lensId, output } results. Validate each output with Zod schema. Pass to merger pipeline. Return structured verdict.",
+  "id": "T-009",
+  "order": 20,
+  "phase": "tools",
+  "status": "open",
+  "title": "lens_review_complete tool implementation",
+  "type": "task"
+}
