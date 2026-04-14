@@ -2,13 +2,14 @@
   "blockedBy": [
     "T-001"
   ],
-  "completedDate": null,
+  "claimedBySession": "7d9b114d-19ad-4adc-b0b5-8eb9464243e0",
+  "completedDate": "2026-04-13",
   "createdDate": "2026-04-13",
   "description": "Define all Zod schemas in src/schema/: LensFinding, LensOutput (status + findings array), ReviewVerdict, StartParams, CompleteParams. These are the contracts between tools, lenses, and merger.",
   "id": "T-003",
   "order": 30,
   "phase": "foundation",
-  "status": "open",
+  "status": "complete",
   "title": "Zod schemas -- finding, lens output, verdict, tool params",
   "type": "task"
 }
