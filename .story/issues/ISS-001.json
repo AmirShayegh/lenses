@@ -1,0 +1,19 @@
+{
+  "components": [
+    "tooling",
+    "gitignore"
+  ],
+  "discoveredDate": "2026-04-13",
+  "id": "ISS-001",
+  "impact": "After T-001 landed, `git status` shows three untracked tool artifacts on every invocation: `reviews.db` (codex-bridge local cache), `.story/sessions/` (per-session autonomous guide state), `.story/status.json` (auto-generated status cache). None of these should be committed. Each future ticket will repeat the clutter and risk accidental `git add -A`.",
+  "location": [
+    ".gitignore"
+  ],
+  "phase": "foundation",
+  "relatedTickets": [],
+  "resolution": "Resolved in the T-001 commit by adding `reviews.db`, `.story/sessions/`, `.story/status.json` to `.gitignore` under a \"Local tool artifacts\" section.",
+  "resolvedDate": "2026-04-13",
+  "severity": "low",
+  "status": "resolved",
+  "title": "Add local tool artifacts to .gitignore (reviews.db, .story/sessions/, .story/status.json)"
+}

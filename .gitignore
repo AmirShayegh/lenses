@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.vitest/
+.tsbuildinfo
+
+# Local tool artifacts (codex-bridge + claudestory autonomous mode)
+reviews.db
+.story/sessions/
+.story/status.json

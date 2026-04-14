@@ -1,0 +1,38 @@
+{
+  "name": "@amirshayegh/lenses",
+  "version": "0.0.0",
+  "description": "Multi-lens code review MCP server — 8 specialized reviewers in parallel",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": { "lenses": "dist/cli.js" },
+  "engines": { "node": ">=20" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsup && node ./scripts/postbuild.mjs",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ci": "vitest run --reporter=json --outputFile=.vitest/results.json",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.0.4",
+    "zod": "3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "20.12.7",
+    "tsup": "8.0.2",
+    "typescript": "5.4.5",
+    "vitest": "1.5.0"
+  },
+  "publishConfig": { "access": "public" },
+  "license": "MIT"
+}
