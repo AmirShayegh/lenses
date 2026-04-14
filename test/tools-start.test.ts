@@ -1,14 +1,23 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { createServer } from "../src/server.js";
+import { _resetForTests, getReview } from "../src/state/review-state.js";
 import {
   handleLensReviewStart,
   StartToolInputSchema,
   StartToolOutputSchema,
 } from "../src/tools/start.js";
+
+// Every lens_review_start call registers a session in the T-020 state
+// store. Clearing the module-level Map between tests keeps this file
+// isolated from neighbors AND prevents unbounded growth once T-009
+// exercises completion paths against the same singleton.
+beforeEach(() => {
+  _resetForTests();
+});
 
 const UUID_V4_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -187,6 +196,17 @@ describe("handleLensReviewStart -- end-to-end happy path", () => {
     const parsedA = StartToolOutputSchema.parse(a.body);
     const parsedB = StartToolOutputSchema.parse(b.body);
     expect(parsedA.reviewId).not.toBe(parsedB.reviewId);
+  });
+
+  it("registers the review in the T-020 state store with matching stage and expectedLensIds", async () => {
+    const { body } = await callStart(planReviewArgs());
+    const parsed = StartToolOutputSchema.parse(body);
+    const session = getReview(parsed.reviewId);
+    expect(session).toBeDefined();
+    if (!session) throw new Error();
+    expect(session.status).toBe("started");
+    expect(session.stage).toBe("PLAN_REVIEW");
+    expect(session.expectedLensIds).toEqual(parsed.agents.map((a) => a.id));
   });
 });
 

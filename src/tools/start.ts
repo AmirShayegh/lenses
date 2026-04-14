@@ -20,6 +20,7 @@ import {
 } from "../lenses/prompt-builder.js";
 import { LensFindingSchema } from "../schema/finding.js";
 import { sharedStartShape, type StartParams } from "../schema/index.js";
+import { registerReview } from "../state/review-state.js";
 
 export const LENS_REVIEW_START_NAME = "lens_review_start";
 
@@ -152,8 +153,20 @@ function buildResponse(parsed: StartToolInput): StartToolOutput {
     ...(projectContext !== undefined ? { projectContext } : {}),
   });
 
+  // Track the review in the T-020 state machine BEFORE returning so the
+  // complementary `lens_review_complete` handler (T-009) can enforce
+  // reviewId validity, lens coverage, and one-shot completion. The store
+  // is in-memory; T-014 will layer persistence on top without changing
+  // this call site.
+  const reviewId = randomUUID();
+  registerReview({
+    reviewId,
+    stage: parsed.stage,
+    expectedLensIds: agents.map((a) => a.lensId),
+  });
+
   return {
-    reviewId: randomUUID(),
+    reviewId,
     agents: agents.map(({ lensId, model, prompt }) => ({
       id: lensId,
       model,
