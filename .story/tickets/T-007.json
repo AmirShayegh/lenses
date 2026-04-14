@@ -3,13 +3,14 @@
     "T-004",
     "T-005"
   ],
-  "completedDate": null,
+  "claimedBySession": "43edeee0-1f80-4d1d-aa4f-1fd1d6700430",
+  "completedDate": "2026-04-14",
   "createdDate": "2026-04-13",
   "description": "Build the function that takes a lens prompt template + shared preamble + stage + artifact + metadata and produces a single complete prompt string. Never truncate. The output is what the agent receives verbatim to spawn a subagent.",
   "id": "T-007",
   "order": 40,
   "phase": "lenses",
-  "status": "open",
+  "status": "complete",
   "title": "Prompt builder -- assemble complete agent prompts",
   "type": "task"
 }
