@@ -96,7 +96,11 @@ describe("MCP server skeleton", () => {
     }
   });
 
-  it("calling lens_review_complete returns the stub payload", async () => {
+  it("calling lens_review_complete with no arguments surfaces a Zod error via isError", async () => {
+    // Real handler (T-009); full happy-path coverage lives in
+    // test/tools-complete.test.ts. This assertion only pins the
+    // error-surface shape at the MCP boundary so the server-level
+    // test doesn't regress.
     const { client, server } = await connectedPair();
     try {
       const result = await client.request(
@@ -106,12 +110,11 @@ describe("MCP server skeleton", () => {
         },
         CallToolResultSchema,
       );
-      expect(result.content).toHaveLength(1);
+      expect(result.isError).toBe(true);
       const first = result.content[0];
       expect(first?.type).toBe("text");
       if (first?.type === "text") {
-        const parsed = JSON.parse(first.text);
-        expect(parsed).toMatchObject({ stub: true, tool: "lens_review_complete" });
+        expect(first.text).toContain("lens_review_complete: invalid arguments");
       }
     } finally {
       await closeQuietly(client, server);
