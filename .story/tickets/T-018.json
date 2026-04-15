@@ -3,13 +3,14 @@
     "T-009",
     "T-013"
   ],
-  "completedDate": null,
+  "claimedBySession": "dc118ade-fbfb-4823-b8d8-3974ce023ba8",
+  "completedDate": "2026-04-15",
   "createdDate": "2026-04-13",
   "description": "Publish @amirshayegh/lenses to npm. Verify standalone install works: npm install -g @amirshayegh/lenses && claude mcp add lenses -s user -- lenses --mcp. Add as npm dependency of @anthropologies/claudestory.",
   "id": "T-018",
   "order": 30,
   "phase": "integration",
-  "status": "open",
+  "status": "complete",
   "title": "npm publish and standalone CLI",
   "type": "task"
 }
