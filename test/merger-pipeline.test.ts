@@ -5,7 +5,13 @@ import {
   runMergerPipeline,
   type LensRunResult,
 } from "../src/merger/pipeline.js";
-import type { LensFinding, LensOutput, Severity } from "../src/schema/index.js";
+import {
+  MergerConfigSchema,
+  type LensFinding,
+  type LensOutput,
+  type MergerConfig,
+  type Severity,
+} from "../src/schema/index.js";
 
 const RID = "merger-pipeline-test-review-id";
 
@@ -232,5 +238,90 @@ describe("runMergerPipeline -- cross-lens dedup (T-010)", () => {
     expect(v.verdict).toBe("approve");
     expect(v.major).toBe(0);
     expect(v.minor).toBe(1);
+  });
+});
+
+describe("runMergerPipeline -- blocking policy (T-011)", () => {
+  it("custom confidenceFloor=0.95 drops the only finding -> approve", () => {
+    const cfg: MergerConfig = MergerConfigSchema.parse({
+      confidenceFloor: 0.95,
+    });
+    const v = runMergerPipeline({
+      reviewId: RID,
+      mergerConfig: cfg,
+      perLens: [perLens("clean-code", ok([finding("major")]))],
+    });
+    expect(v.verdict).toBe("approve");
+    expect(v.major).toBe(0);
+    expect(v.findings).toEqual([]);
+  });
+
+  it("alwaysBlock category promotes a minor finding -> reject", () => {
+    const cfg: MergerConfig = MergerConfigSchema.parse({
+      blockingPolicy: { alwaysBlock: ["auth"] },
+    });
+    const v = runMergerPipeline({
+      reviewId: RID,
+      mergerConfig: cfg,
+      perLens: [
+        perLens(
+          "security",
+          ok([
+            finding("minor", {
+              id: "auth-1",
+              file: "src/auth.ts",
+              line: 1,
+              category: "auth",
+              confidence: 0.9,
+            }),
+          ]),
+        ),
+      ],
+    });
+    expect(v.verdict).toBe("reject");
+    expect(v.blocking).toBe(1);
+    expect(v.findings).toHaveLength(1);
+    expect(v.findings[0]!.severity).toBe("blocking");
+  });
+
+  it("neverBlock demotes a solo-lens blocking finding -> revise", () => {
+    const cfg: MergerConfig = MergerConfigSchema.parse({
+      blockingPolicy: { neverBlock: ["security"] },
+    });
+    const v = runMergerPipeline({
+      reviewId: RID,
+      mergerConfig: cfg,
+      perLens: [
+        perLens(
+          "security",
+          ok([
+            finding("blocking", {
+              id: "b1",
+              file: "src/auth.ts",
+              line: 5,
+              category: "style",
+              confidence: 0.9,
+            }),
+          ]),
+        ),
+      ],
+    });
+    expect(v.verdict).toBe("revise");
+    expect(v.blocking).toBe(0);
+    expect(v.major).toBe(1);
+  });
+
+  it("absence of mergerConfig uses DEFAULT_MERGER_CONFIG (floor=0.6 keeps 0.8 findings intact)", () => {
+    const v = runMergerPipeline({
+      reviewId: RID,
+      perLens: [
+        perLens(
+          "clean-code",
+          ok([finding("major", { confidence: 0.8, category: "style" })]),
+        ),
+      ],
+    });
+    expect(v.verdict).toBe("revise");
+    expect(v.major).toBe(1);
   });
 });

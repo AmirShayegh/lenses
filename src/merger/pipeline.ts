@@ -11,13 +11,16 @@
  */
 
 import type { LensId } from "../lenses/prompts/index.js";
-import type {
-  LensOutput,
-  ReviewVerdict,
-  Severity,
-  Verdict,
+import {
+  DEFAULT_MERGER_CONFIG,
+  type LensOutput,
+  type MergerConfig,
+  type ReviewVerdict,
+  type Severity,
+  type Verdict,
 } from "../schema/index.js";
 
+import { applyBlockingPolicy } from "./blocking-policy.js";
 import { dedupeFindings } from "./dedup.js";
 
 export interface LensRunResult {
@@ -28,6 +31,8 @@ export interface LensRunResult {
 export interface MergerInput {
   readonly reviewId: string;
   readonly perLens: readonly LensRunResult[];
+  /** Optional merger-time config (T-011). Absent → `DEFAULT_MERGER_CONFIG`. */
+  readonly mergerConfig?: MergerConfig;
 }
 
 /**
@@ -42,10 +47,14 @@ export interface MergerInput {
  * loud, not silent.
  */
 export function runMergerPipeline(input: MergerInput): ReviewVerdict {
+  const config = input.mergerConfig ?? DEFAULT_MERGER_CONFIG;
+
   // T-010: collapse findings that share (file, line, category) across
-  // lenses. Severity counts drive off the post-dedup array because the
-  // verdict schema's count invariant must match the emitted findings.
-  const findings = dedupeFindings(input.perLens);
+  // lenses. T-011: drop below-floor findings and apply blocking policy.
+  // Severity counts drive off the post-policy array because the verdict
+  // schema's count invariant must match the emitted findings.
+  const deduped = dedupeFindings(input.perLens);
+  const findings = applyBlockingPolicy(deduped, config);
 
   const counts: Record<Severity, number> = {
     blocking: 0,

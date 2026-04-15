@@ -2,13 +2,14 @@
   "blockedBy": [
     "T-003"
   ],
-  "completedDate": null,
+  "claimedBySession": "efc26ffb-44b6-4cb2-88d4-d837f9c697c8",
+  "completedDate": "2026-04-14",
   "createdDate": "2026-04-13",
   "description": "Build src/merger/blocking-policy.ts. Apply confidence floor (drop findings below threshold, default 0.6). Apply blocking policy: certain categories always block (injection, auth-bypass, hardcoded-secrets), certain lenses never block (configurable). Output: blocking vs non-blocking classification per finding.",
   "id": "T-011",
   "order": 20,
   "phase": "merger",
-  "status": "open",
+  "status": "complete",
   "title": "Confidence filtering and blocking policy",
   "type": "task"
 }

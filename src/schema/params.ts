@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { DeferralKeySchema } from "./finding.js";
+import { MergerConfigSchema } from "./merger-config.js";
 
 /** Which stage of the autonomous loop a review corresponds to. */
 export const StageSchema = z.enum(["PLAN_REVIEW", "CODE_REVIEW"]);
@@ -67,6 +68,12 @@ export const CompleteParamsSchema = z
         })
         .strict(),
     ),
+    // T-011: optional merger-time config (confidence floor + blocking
+    // policy). Undefined cascades to `DEFAULT_MERGER_CONFIG` at pipeline
+    // time. Left `.optional()` (no `.default(...)`) so the parsed
+    // `CompleteParams` surface reflects whether the caller sent the
+    // field -- the pipeline decides the default, not the schema.
+    mergerConfig: MergerConfigSchema.optional(),
   })
   .strict()
   .superRefine((val, ctx) => {

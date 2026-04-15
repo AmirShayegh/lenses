@@ -47,6 +47,10 @@ export const lensReviewCompleteDefinition = {
           additionalProperties: false,
         },
       },
+      // T-011: optional merger-time config (confidence floor + blocking
+      // policy). Full validation happens at the Zod boundary, so the
+      // listTools hint is kept deliberately loose.
+      mergerConfig: { type: "object" },
     },
     required: ["reviewId", "results"],
     additionalProperties: false,
@@ -143,10 +147,19 @@ export async function handleLensReviewComplete(
       });
     }
 
-    const verdict = runMergerPipeline({
-      reviewId: parsed.reviewId,
-      perLens,
-    });
+    // Only attach `mergerConfig` when the caller actually sent one --
+    // `exactOptionalPropertyTypes` treats `{ mergerConfig: undefined }`
+    // differently from an absent key. The pipeline falls back to
+    // `DEFAULT_MERGER_CONFIG` when the key is absent.
+    const verdict = runMergerPipeline(
+      parsed.mergerConfig === undefined
+        ? { reviewId: parsed.reviewId, perLens }
+        : {
+            reviewId: parsed.reviewId,
+            perLens,
+            mergerConfig: parsed.mergerConfig,
+          },
+    );
 
     // Defense-in-depth: re-parse the computed verdict so a merger bug
     // (e.g., severity counts that don't match findings) cannot leak

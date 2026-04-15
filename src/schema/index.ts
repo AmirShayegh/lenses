@@ -31,3 +31,12 @@ export {
   type Stage,
   type StartParams,
 } from "./params.js";
+
+export {
+  BlockingPolicySchema,
+  DEFAULT_ALWAYS_BLOCK,
+  DEFAULT_MERGER_CONFIG,
+  MergerConfigSchema,
+  type BlockingPolicy,
+  type MergerConfig,
+} from "./merger-config.js";

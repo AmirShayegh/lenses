@@ -334,6 +334,66 @@ describe("handleLensReviewComplete -- cross-lens dedup (T-010)", () => {
   });
 });
 
+describe("handleLensReviewComplete -- mergerConfig flow-through (T-011)", () => {
+  it("custom confidenceFloor on the MCP args drops findings and yields approve", async () => {
+    const { reviewId, lensIds } = await startPlanReview({
+      lensConfig: { lenses: ["clean-code"] },
+    });
+    const results = lensIds.map((id) => ({
+      lensId: id,
+      output: ok([finding("major", { confidence: 0.8, category: "style" })]),
+    }));
+    const { isError, body } = await callComplete({
+      reviewId,
+      results,
+      mergerConfig: { confidenceFloor: 0.95 },
+    });
+    expect(isError).toBe(false);
+    const verdict = ReviewVerdictSchema.parse(body);
+    // 0.8 confidence is below 0.95 floor, category 'style' is not
+    // alwaysBlock, so the finding is dropped.
+    expect(verdict.verdict).toBe("approve");
+    expect(verdict.major).toBe(0);
+    expect(verdict.findings).toEqual([]);
+  });
+
+  it("alwaysBlock category promotes a minor to blocking and flips to reject", async () => {
+    const { reviewId, lensIds } = await startPlanReview({
+      lensConfig: { lenses: ["security"] },
+    });
+    const results = lensIds.map((id) => ({
+      lensId: id,
+      output: ok([
+        finding("minor", {
+          id: "inj-1",
+          file: "src/x.ts",
+          line: 3,
+          category: "injection",
+          confidence: 0.9,
+        }),
+      ]),
+    }));
+    const { body } = await callComplete({ reviewId, results });
+    const verdict = ReviewVerdictSchema.parse(body);
+    // DEFAULT_MERGER_CONFIG.alwaysBlock includes "injection".
+    expect(verdict.verdict).toBe("reject");
+    expect(verdict.blocking).toBe(1);
+  });
+
+  it("a non-object mergerConfig is rejected at the Zod boundary", async () => {
+    const { reviewId, lensIds } = await startPlanReview({
+      lensConfig: { lenses: ["security"] },
+    });
+    const { isError, text } = await callComplete({
+      reviewId,
+      results: lensIds.map((id) => ({ lensId: id, output: ok() })),
+      mergerConfig: "nope",
+    });
+    expect(isError).toBe(true);
+    expect(text).toContain("lens_review_complete: invalid arguments");
+  });
+});
+
 describe("handleLensReviewComplete -- sessionId coupling (T-009 baseline)", () => {
   it("sessionId in the verdict equals the input reviewId", async () => {
     const { reviewId, lensIds } = await startPlanReview({

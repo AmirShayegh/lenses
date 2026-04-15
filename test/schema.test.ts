@@ -2,10 +2,13 @@ import { describe, it, expect } from "vitest";
 
 import {
   CompleteParamsSchema,
+  DEFAULT_ALWAYS_BLOCK,
+  DEFAULT_MERGER_CONFIG,
   DeferralKeySchema,
   LensFindingSchema,
   LensOutputSchema,
   MergedFindingSchema,
+  MergerConfigSchema,
   ReviewVerdictSchema,
   StartParamsSchema,
   TensionSchema,
@@ -680,5 +683,135 @@ describe("CompleteParamsSchema", () => {
       ],
     });
     expect(result.success).toBe(false);
+  });
+
+  it("accepts an optional mergerConfig", () => {
+    const result = CompleteParamsSchema.safeParse({
+      reviewId: "r1",
+      results: [],
+      mergerConfig: { confidenceFloor: 0.9 },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts the absence of mergerConfig", () => {
+    const result = CompleteParamsSchema.safeParse({
+      reviewId: "r1",
+      results: [],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a non-object mergerConfig", () => {
+    const result = CompleteParamsSchema.safeParse({
+      reviewId: "r1",
+      results: [],
+      mergerConfig: "nope",
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("MergerConfigSchema", () => {
+  it("parses undefined to fully-defaulted values", () => {
+    const parsed = MergerConfigSchema.parse(undefined);
+    expect(parsed.confidenceFloor).toBe(0.6);
+    expect(parsed.blockingPolicy.alwaysBlock).toEqual([...DEFAULT_ALWAYS_BLOCK]);
+    expect(parsed.blockingPolicy.neverBlock).toEqual([]);
+  });
+
+  it("parses {} to fully-defaulted values", () => {
+    const parsed = MergerConfigSchema.parse({});
+    expect(parsed.confidenceFloor).toBe(0.6);
+    expect(parsed.blockingPolicy.alwaysBlock).toEqual([...DEFAULT_ALWAYS_BLOCK]);
+    expect(parsed.blockingPolicy.neverBlock).toEqual([]);
+  });
+
+  it("partial config with only confidenceFloor fills blockingPolicy with defaults", () => {
+    // Canary for the `.optional().default(...)` cascade: the nested
+    // `BlockingPolicySchema.default({})` alone would NOT fire here.
+    const parsed = MergerConfigSchema.parse({ confidenceFloor: 0.5 });
+    expect(parsed.confidenceFloor).toBe(0.5);
+    expect(parsed.blockingPolicy.alwaysBlock).toEqual([...DEFAULT_ALWAYS_BLOCK]);
+    expect(parsed.blockingPolicy.neverBlock).toEqual([]);
+  });
+
+  it("partial blockingPolicy with only alwaysBlock fills neverBlock default", () => {
+    const parsed = MergerConfigSchema.parse({
+      blockingPolicy: { alwaysBlock: ["auth"] },
+    });
+    expect(parsed.blockingPolicy.alwaysBlock).toEqual(["auth"]);
+    expect(parsed.blockingPolicy.neverBlock).toEqual([]);
+  });
+
+  it("DEFAULT_MERGER_CONFIG matches the documented defaults", () => {
+    expect(DEFAULT_MERGER_CONFIG.confidenceFloor).toBe(0.6);
+    expect(DEFAULT_MERGER_CONFIG.blockingPolicy.alwaysBlock).toEqual([
+      ...DEFAULT_ALWAYS_BLOCK,
+    ]);
+    expect(DEFAULT_MERGER_CONFIG.blockingPolicy.neverBlock).toEqual([]);
+  });
+
+  it("DEFAULT_MERGER_CONFIG is deeply frozen (accidental writes throw, not corrupt)", () => {
+    expect(Object.isFrozen(DEFAULT_MERGER_CONFIG)).toBe(true);
+    expect(Object.isFrozen(DEFAULT_MERGER_CONFIG.blockingPolicy)).toBe(true);
+    expect(
+      Object.isFrozen(DEFAULT_MERGER_CONFIG.blockingPolicy.alwaysBlock),
+    ).toBe(true);
+    expect(
+      Object.isFrozen(DEFAULT_MERGER_CONFIG.blockingPolicy.neverBlock),
+    ).toBe(true);
+  });
+
+  it("rejects unknown top-level keys (strict)", () => {
+    expect(
+      MergerConfigSchema.safeParse({ confidenceFloor: 0.5, foo: 1 }).success,
+    ).toBe(false);
+  });
+
+  it("rejects unknown keys inside blockingPolicy (strict)", () => {
+    expect(
+      MergerConfigSchema.safeParse({
+        blockingPolicy: { alwaysBlock: [], neverBlock: [], foo: 1 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects confidenceFloor outside [0, 1]", () => {
+    expect(MergerConfigSchema.safeParse({ confidenceFloor: -0.1 }).success).toBe(
+      false,
+    );
+    expect(MergerConfigSchema.safeParse({ confidenceFloor: 1.1 }).success).toBe(
+      false,
+    );
+  });
+
+  it("accepts confidenceFloor at the boundaries (0 and 1)", () => {
+    expect(MergerConfigSchema.safeParse({ confidenceFloor: 0 }).success).toBe(
+      true,
+    );
+    expect(MergerConfigSchema.safeParse({ confidenceFloor: 1 }).success).toBe(
+      true,
+    );
+  });
+
+  it("rejects empty strings inside alwaysBlock / neverBlock", () => {
+    expect(
+      MergerConfigSchema.safeParse({
+        blockingPolicy: { alwaysBlock: [""] },
+      }).success,
+    ).toBe(false);
+    expect(
+      MergerConfigSchema.safeParse({
+        blockingPolicy: { neverBlock: ["security", ""] },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts an explicitly empty alwaysBlock (caller opts out of the default set)", () => {
+    const parsed = MergerConfigSchema.parse({
+      blockingPolicy: { alwaysBlock: [] },
+    });
+    expect(parsed.blockingPolicy.alwaysBlock).toEqual([]);
   });
 });
