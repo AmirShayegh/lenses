@@ -14,6 +14,10 @@ import {
 } from "../src/schema/index.js";
 
 const RID = "merger-pipeline-test-review-id";
+// T-014: sessionId is now a distinct input and MUST flow through the
+// pipeline unchanged. Kept textually distinct from RID so any
+// accidental reviewId-for-sessionId substitution fails loudly.
+const SID = "merger-pipeline-test-session-id";
 
 function finding(
   severity: Severity,
@@ -46,7 +50,7 @@ function perLens(lensId: LensId, output: LensOutput): LensRunResult {
 
 describe("runMergerPipeline -- baseline severity → verdict", () => {
   it("empty perLens produces approve with zero counts and empty tensions", () => {
-    const v = runMergerPipeline({ reviewId: RID, perLens: [] });
+    const v = runMergerPipeline({ reviewId: RID, sessionId: SID, perLens: [] });
     expect(v.verdict).toBe("approve");
     expect(v.findings).toEqual([]);
     expect(v.tensions).toEqual([]);
@@ -54,12 +58,17 @@ describe("runMergerPipeline -- baseline severity → verdict", () => {
     expect(v.major).toBe(0);
     expect(v.minor).toBe(0);
     expect(v.suggestion).toBe(0);
-    expect(v.sessionId).toBe(RID);
+    // T-014: sessionId is sourced from MergerInput.sessionId, NOT from
+    // reviewId. This pins the decoupling at the merger layer; the
+    // MCP-boundary flip is pinned separately in tools-complete.test.ts.
+    expect(v.sessionId).toBe(SID);
+    expect(v.sessionId).not.toBe(RID);
   });
 
   it("single lens with zero findings → approve", () => {
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       perLens: [perLens("security", ok())],
     });
     expect(v.verdict).toBe("approve");
@@ -69,6 +78,7 @@ describe("runMergerPipeline -- baseline severity → verdict", () => {
   it("a single suggestion finding → approve, suggestion=1", () => {
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       perLens: [perLens("clean-code", ok([finding("suggestion")]))],
     });
     expect(v.verdict).toBe("approve");
@@ -78,6 +88,7 @@ describe("runMergerPipeline -- baseline severity → verdict", () => {
   it("a single minor finding → approve, minor=1 (minor alone never blocks)", () => {
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       perLens: [perLens("clean-code", ok([finding("minor")]))],
     });
     expect(v.verdict).toBe("approve");
@@ -87,6 +98,7 @@ describe("runMergerPipeline -- baseline severity → verdict", () => {
   it("a single major finding → revise, major=1", () => {
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       perLens: [perLens("clean-code", ok([finding("major")]))],
     });
     expect(v.verdict).toBe("revise");
@@ -96,6 +108,7 @@ describe("runMergerPipeline -- baseline severity → verdict", () => {
   it("a single blocking finding → reject, blocking=1", () => {
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       perLens: [perLens("security", ok([finding("blocking")]))],
     });
     expect(v.verdict).toBe("reject");
@@ -107,6 +120,7 @@ describe("runMergerPipeline -- aggregation across lenses", () => {
   it("mixed severity counts sum exactly and verdict reflects the highest severity present", () => {
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       perLens: [
         perLens(
           "security",
@@ -135,6 +149,7 @@ describe("runMergerPipeline -- aggregation across lenses", () => {
   it("'error' status lens contributes no findings (LensOutputSchema invariant pinned at the merger layer too)", () => {
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       perLens: [
         perLens("security", errored("parse failure")),
         perLens("clean-code", ok([finding("major")])),
@@ -146,10 +161,24 @@ describe("runMergerPipeline -- aggregation across lenses", () => {
   });
 });
 
-describe("runMergerPipeline -- sessionId coupling", () => {
-  it("sessionId equals reviewId (T-009 baseline; T-014 will decouple)", () => {
-    const v = runMergerPipeline({ reviewId: "arbitrary-id", perLens: [] });
-    expect(v.sessionId).toBe("arbitrary-id");
+describe("runMergerPipeline -- sessionId decoupling (T-014)", () => {
+  it("sessionId is read from MergerInput.sessionId, not reviewId", () => {
+    const v = runMergerPipeline({
+      reviewId: "round-scoped-id",
+      sessionId: "series-scoped-id",
+      perLens: [],
+    });
+    expect(v.sessionId).toBe("series-scoped-id");
+    expect(v.sessionId).not.toBe("round-scoped-id");
+  });
+
+  it("reviewId and sessionId may carry the same value (caller's choice)", () => {
+    const v = runMergerPipeline({
+      reviewId: "same-id",
+      sessionId: "same-id",
+      perLens: [],
+    });
+    expect(v.sessionId).toBe("same-id");
   });
 });
 
@@ -157,6 +186,7 @@ describe("runMergerPipeline -- cross-lens dedup (T-010)", () => {
   it("two lenses colliding on (file, line, category) collapse to one finding; severity counts reflect the winner", () => {
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       perLens: [
         perLens(
           "security",
@@ -202,6 +232,7 @@ describe("runMergerPipeline -- cross-lens dedup (T-010)", () => {
     // T-011 will layer blocking policy on top; this test codifies the trade-off.
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       perLens: [
         perLens(
           "clean-code",
@@ -248,6 +279,7 @@ describe("runMergerPipeline -- blocking policy (T-011)", () => {
     });
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       mergerConfig: cfg,
       perLens: [perLens("clean-code", ok([finding("major")]))],
     });
@@ -262,6 +294,7 @@ describe("runMergerPipeline -- blocking policy (T-011)", () => {
     });
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       mergerConfig: cfg,
       perLens: [
         perLens(
@@ -290,6 +323,7 @@ describe("runMergerPipeline -- blocking policy (T-011)", () => {
     });
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       mergerConfig: cfg,
       perLens: [
         perLens(
@@ -314,6 +348,7 @@ describe("runMergerPipeline -- blocking policy (T-011)", () => {
   it("absence of mergerConfig uses DEFAULT_MERGER_CONFIG (floor=0.6 keeps 0.8 findings intact)", () => {
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       perLens: [
         perLens(
           "clean-code",
@@ -330,6 +365,7 @@ describe("runMergerPipeline -- tension detection (T-012)", () => {
   it("security + performance at same file, different categories → one tension in verdict", () => {
     const v = runMergerPipeline({
       reviewId: RID,
+      sessionId: SID,
       perLens: [
         perLens(
           "security",

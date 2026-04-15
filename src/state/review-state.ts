@@ -7,14 +7,16 @@
  * Zod's responsibility in T-009 -- this module tracks identity, not
  * content.
  *
- * Storage is a process-local `Map`. T-014 (session cache) will layer
- * disk-backed storage + TTL on top later; keeping this synchronous and
- * in-memory now means the callers stay simple and T-014 can swap the
- * backing behind the same surface.
+ * Storage is a process-local `Map`, keyed by the per-round `reviewId`.
+ * The payload carries the cross-round `sessionId` (T-014) so
+ * `complete.ts` can stitch round records onto the disk cache without
+ * reparsing the start-time envelope. T-014's disk cache is a separate
+ * module (`src/cache/session.ts`) -- identity lives here; persistence
+ * lives there.
  */
 
 import type { LensId } from "../lenses/prompts/index.js";
-import type { Stage } from "../schema/index.js";
+import type { DeferralKey, Stage } from "../schema/index.js";
 
 export type ReviewStatus = "started" | "complete";
 
@@ -28,8 +30,11 @@ export type ReviewStatus = "started" | "complete";
  */
 export interface ReviewSession {
   readonly reviewId: string;
+  readonly sessionId: string;
   readonly stage: Stage;
   readonly expectedLensIds: readonly LensId[];
+  readonly reviewRound: number;
+  readonly priorDeferrals: readonly DeferralKey[];
   readonly startedAt: number;
   readonly status: ReviewStatus;
 }
@@ -69,8 +74,11 @@ const sessions = new Map<string, ReviewSession>();
  */
 export function registerReview(params: {
   readonly reviewId: string;
+  readonly sessionId: string;
   readonly stage: Stage;
   readonly expectedLensIds: readonly LensId[];
+  readonly reviewRound: number;
+  readonly priorDeferrals: readonly DeferralKey[];
 }): void {
   if (sessions.has(params.reviewId)) {
     throw new Error(
@@ -79,8 +87,11 @@ export function registerReview(params: {
   }
   sessions.set(params.reviewId, {
     reviewId: params.reviewId,
+    sessionId: params.sessionId,
     stage: params.stage,
     expectedLensIds: params.expectedLensIds,
+    reviewRound: params.reviewRound,
+    priorDeferrals: params.priorDeferrals,
     startedAt: Date.now(),
     status: "started",
   });

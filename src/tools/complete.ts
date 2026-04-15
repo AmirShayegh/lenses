@@ -5,6 +5,11 @@ import type {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
+import {
+  cleanupStaleSessions,
+  writeSessionRound,
+  type RoundRecord,
+} from "../cache/session.js";
 import { LENSES, type LensId } from "../lenses/prompts/index.js";
 import { runMergerPipeline, type LensRunResult } from "../merger/pipeline.js";
 import { LensOutputSchema } from "../schema/finding.js";
@@ -13,8 +18,12 @@ import {
   ReviewVerdictSchema,
   type CompleteParams,
   type LensOutput,
+  type ReviewVerdict,
 } from "../schema/index.js";
-import { validateAndComplete } from "../state/review-state.js";
+import {
+  validateAndComplete,
+  type ReviewSession,
+} from "../state/review-state.js";
 
 export const LENS_REVIEW_COMPLETE_NAME = "lens_review_complete";
 
@@ -86,6 +95,65 @@ function summarizeZod(err: z.ZodError): string {
     .join("; ");
 }
 
+/**
+ * Append this round to the disk session cache, then sweep stale
+ * sessions. Every step is best-effort per RULES.md §4: any error is
+ * logged to stderr but never propagated, so the agent still receives
+ * its verdict even if the disk is full or permissions are wrong. The
+ * documented cost is that the agent may later present a sessionId
+ * that does not resolve to a file; T-015's read-at-start path treats
+ * that identically to "round 1."
+ *
+ * The entire body sits inside one outer try/catch (in addition to the
+ * per-call guards) so that a throw from `round` construction itself
+ * -- however unlikely -- cannot escape into the caller's tool-error
+ * path. The caller in `handleLensReviewComplete` relies on this
+ * guarantee by invoking `persistRoundBestEffort` outside its own
+ * outer try/catch: any cache trouble must be logged and swallowed
+ * here, never become `isError: true`.
+ */
+function persistRoundBestEffort(
+  session: ReviewSession,
+  verdict: ReviewVerdict,
+): void {
+  try {
+    const round: RoundRecord = {
+      roundNumber: session.reviewRound,
+      reviewId: session.reviewId,
+      stage: session.stage,
+      verdict: verdict.verdict,
+      counts: {
+        blocking: verdict.blocking,
+        major: verdict.major,
+        minor: verdict.minor,
+        suggestion: verdict.suggestion,
+      },
+      findings: verdict.findings,
+      priorDeferrals: [...session.priorDeferrals],
+      completedAt: Date.now(),
+    };
+    try {
+      writeSessionRound({ sessionId: session.sessionId, round });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `lens_review_complete: session cache write failed: ${message}`,
+      );
+    }
+    try {
+      cleanupStaleSessions();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `lens_review_complete: session cache cleanup failed: ${message}`,
+      );
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`lens_review_complete: session cache skipped: ${message}`);
+  }
+}
+
 export async function handleLensReviewComplete(
   req: CallToolRequest,
 ): Promise<CallToolResult> {
@@ -110,6 +178,16 @@ export async function handleLensReviewComplete(
     return errorResult(`lens_review_complete: unknown error`);
   }
 
+  // `session` and `safe` are declared OUTSIDE the outer try/catch so
+  // the cache write (persistRoundBestEffort) can run strictly after
+  // the try/catch completes successfully. Structurally this is what
+  // makes RULES.md §4 ("if cache is unavailable, skip caching, don't
+  // fail") watertight: even if some future edit accidentally threw
+  // from the cache call or removed persistRoundBestEffort's own
+  // outer guard, the throw could not reach the outer catch and
+  // couldn't turn a successful verdict into `isError: true`.
+  let session: ReviewSession;
+  let safe: ReviewVerdict;
   try {
     // State machine check BEFORE per-lens Zod work. No point paying
     // the Zod cost for a reviewId that was never issued or has
@@ -147,15 +225,23 @@ export async function handleLensReviewComplete(
       });
     }
 
-    // Only attach `mergerConfig` when the caller actually sent one --
-    // `exactOptionalPropertyTypes` treats `{ mergerConfig: undefined }`
-    // differently from an absent key. The pipeline falls back to
-    // `DEFAULT_MERGER_CONFIG` when the key is absent.
+    // T-014: the cross-round sessionId lives on the stored
+    // ReviewSession (seeded at start-time). The pipeline now takes it
+    // as a distinct field -- reviewId is per-round, sessionId is
+    // cross-round. Only attach `mergerConfig` when the caller actually
+    // sent one -- `exactOptionalPropertyTypes` treats
+    // `{ mergerConfig: undefined }` differently from an absent key.
+    session = stateResult.session;
     const verdict = runMergerPipeline(
       parsed.mergerConfig === undefined
-        ? { reviewId: parsed.reviewId, perLens }
+        ? {
+            reviewId: parsed.reviewId,
+            sessionId: session.sessionId,
+            perLens,
+          }
         : {
             reviewId: parsed.reviewId,
+            sessionId: session.sessionId,
             perLens,
             mergerConfig: parsed.mergerConfig,
           },
@@ -166,8 +252,7 @@ export async function handleLensReviewComplete(
     // through the tool boundary. A ZodError here is a SERVER-side
     // issue, not bad user input, so the catch below does NOT use the
     // "invalid arguments:" prefix.
-    const safe = ReviewVerdictSchema.parse(verdict);
-    return { content: [{ type: "text", text: JSON.stringify(safe) }] };
+    safe = ReviewVerdictSchema.parse(verdict);
   } catch (err) {
     // ZodError extends Error; check it FIRST so a merger-regression
     // verdict parse failure surfaces the flattened issue summary
@@ -185,4 +270,14 @@ export async function handleLensReviewComplete(
     }
     return errorResult(`lens_review_complete: unknown error`);
   }
+
+  // T-014 session cache: persist this round's record and sweep stale
+  // sessions. This runs AFTER the try/catch closes -- combined with
+  // persistRoundBestEffort's own internal guards, cache trouble can
+  // never become `isError: true`. The `safe`-reparsed verdict is the
+  // ONLY source used for the record: it is the same payload the agent
+  // will see, so on-disk state cannot drift from the wire.
+  persistRoundBestEffort(session, safe);
+
+  return { content: [{ type: "text", text: JSON.stringify(safe) }] };
 }

@@ -155,14 +155,20 @@ function buildResponse(parsed: StartToolInput): StartToolOutput {
 
   // Track the review in the T-020 state machine BEFORE returning so the
   // complementary `lens_review_complete` handler (T-009) can enforce
-  // reviewId validity, lens coverage, and one-shot completion. The store
-  // is in-memory; T-014 will layer persistence on top without changing
-  // this call site.
+  // reviewId validity, lens coverage, and one-shot completion. In T-014
+  // we also resolve (or mint) the cross-round `sessionId` here so the
+  // complete-time path can build a `RoundRecord` without reparsing the
+  // start-time envelope. Start-time does NOT read the disk cache --
+  // T-015 owns that path.
   const reviewId = randomUUID();
+  const sessionId = parsed.sessionId ?? randomUUID();
   registerReview({
     reviewId,
+    sessionId,
     stage: parsed.stage,
     expectedLensIds: agents.map((a) => a.lensId),
+    reviewRound: parsed.reviewRound,
+    priorDeferrals: parsed.priorDeferrals,
   });
 
   return {

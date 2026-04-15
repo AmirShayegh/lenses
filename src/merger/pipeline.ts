@@ -30,6 +30,14 @@ export interface LensRunResult {
 
 export interface MergerInput {
   readonly reviewId: string;
+  /**
+   * Cross-round series id (T-014). Distinct from `reviewId`: reviewId
+   * is per-round, sessionId groups rounds of the same review. Callers
+   * that don't care about rounds (baseline tests, one-shot flows) can
+   * pass the same UUID for both, but the two values are otherwise
+   * independent.
+   */
+  readonly sessionId: string;
   readonly perLens: readonly LensRunResult[];
   /** Optional merger-time config (T-011). Absent → `DEFAULT_MERGER_CONFIG`. */
   readonly mergerConfig?: MergerConfig;
@@ -44,10 +52,10 @@ export interface MergerInput {
  * and the boolean is derivable from `blocking`/`major` on the receiver
  * side if ever needed.
  *
- * `sessionId` is set to `reviewId` for T-009. T-014 will introduce a
- * distinct session cache where sessionId diverges from reviewId; the
- * tools-complete test pins the current equality so that change is
- * loud, not silent.
+ * `sessionId` passes straight through from `MergerInput.sessionId` to
+ * the verdict (T-014). The caller (`complete.ts`) reads it off the
+ * stored `ReviewSession`, which was seeded at start-time from the
+ * agent's optional `sessionId` input or a fresh UUID.
  */
 export function runMergerPipeline(input: MergerInput): ReviewVerdict {
   const config = input.mergerConfig ?? DEFAULT_MERGER_CONFIG;
@@ -65,6 +73,6 @@ export function runMergerPipeline(input: MergerInput): ReviewVerdict {
     major: counts.major,
     minor: counts.minor,
     suggestion: counts.suggestion,
-    sessionId: input.reviewId,
+    sessionId: input.sessionId,
   };
 }

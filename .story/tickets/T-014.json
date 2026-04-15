@@ -2,13 +2,14 @@
   "blockedBy": [
     "T-009"
   ],
-  "completedDate": null,
+  "claimedBySession": "efc26ffb-44b6-4cb2-88d4-d837f9c697c8",
+  "completedDate": "2026-04-14",
   "createdDate": "2026-04-13",
   "description": "Build src/cache/session.ts. Store review session state (reviewId, findings per round, deferred findings) in temp directory. Enable round 2+ to reference prior findings and track what was deferred vs fixed. Clean up stale sessions.",
   "id": "T-014",
   "order": 50,
   "phase": "merger",
-  "status": "open",
+  "status": "complete",
   "title": "Session cache -- round-to-round continuity",
   "type": "task"
 }

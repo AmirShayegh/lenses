@@ -638,6 +638,50 @@ describe("StartParamsSchema", () => {
       expect(result.data.priorDeferrals).toEqual([]);
     }
   });
+
+  // T-014: optional sessionId on sharedStartShape. Optional (no
+  // default) so absence remains distinguishable from presence -- the
+  // tool handler mints a UUID on absence, and a default in Zod would
+  // mint a fresh id on every parse call, breaking round-trip tests.
+  it("accepts an omitted sessionId", () => {
+    const result = StartParamsSchema.safeParse({
+      stage: "PLAN_REVIEW",
+      artifact: "plan",
+      ticketDescription: null,
+      reviewRound: 1,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.sessionId).toBeUndefined();
+    }
+  });
+
+  it("accepts a valid UUID sessionId", () => {
+    const result = StartParamsSchema.safeParse({
+      stage: "PLAN_REVIEW",
+      artifact: "plan",
+      ticketDescription: null,
+      reviewRound: 1,
+      sessionId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.sessionId).toBe(
+        "11111111-1111-4111-8111-111111111111",
+      );
+    }
+  });
+
+  it("rejects a non-UUID sessionId", () => {
+    const result = StartParamsSchema.safeParse({
+      stage: "PLAN_REVIEW",
+      artifact: "plan",
+      ticketDescription: null,
+      reviewRound: 1,
+      sessionId: "not-a-uuid",
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("CompleteParamsSchema", () => {

@@ -21,6 +21,15 @@ export const sharedStartShape = {
   ticketDescription: z.string().nullable(),
   reviewRound: z.number().int().min(1),
   priorDeferrals: z.array(DeferralKeySchema).default([]),
+  // T-014: optional series identifier. Absent on round 1 (the server
+  // generates one); present on round 2+ so the agent can link rounds
+  // into a single series. UUID-gated so the agent cannot pass a
+  // free-form string that collides with a future reviewId. Optional
+  // rather than `.default(() => randomUUID())` because the default
+  // belongs on the tool-handler side, where state-machine
+  // registration happens -- pushing it into Zod would mint a fresh id
+  // on every parse call and break the tool-boundary test roundtrip.
+  sessionId: z.string().uuid().optional(),
 } as const;
 
 /**

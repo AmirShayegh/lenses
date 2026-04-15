@@ -1,8 +1,13 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { readSession } from "../src/cache/session.js";
 import { createServer } from "../src/server.js";
 import type { LensId } from "../src/lenses/prompts/index.js";
 import {
@@ -14,6 +19,20 @@ import {
 import { _resetForTests } from "../src/state/review-state.js";
 import { handleLensReviewComplete } from "../src/tools/complete.js";
 import { handleLensReviewStart } from "../src/tools/start.js";
+
+// T-014: the tool boundary writes to the session cache on every
+// complete. Pin `LENSES_SESSION_DIR` to a per-file temp dir so test
+// runs don't pollute the real tmp/lenses-sessions directory and so
+// two test files don't race against each other on the same sessionId.
+let sessionDir: string;
+beforeAll(() => {
+  sessionDir = mkdtempSync(join(tmpdir(), "lenses-tools-complete-"));
+  process.env.LENSES_SESSION_DIR = sessionDir;
+});
+afterAll(() => {
+  delete process.env.LENSES_SESSION_DIR;
+  rmSync(sessionDir, { recursive: true, force: true });
+});
 
 beforeEach(() => {
   _resetForTests();
@@ -42,6 +61,8 @@ function ok(findings: LensFinding[] = []): LensOutput {
 
 async function startPlanReview(overrides: {
   lensConfig?: { lenses?: string[] };
+  sessionId?: string;
+  reviewRound?: number;
 } = {}): Promise<{ reviewId: string; lensIds: LensId[] }> {
   const result = await handleLensReviewStart({
     method: "tools/call",
@@ -51,9 +72,12 @@ async function startPlanReview(overrides: {
         stage: "PLAN_REVIEW",
         artifact: "## Plan\n\nDo the thing.",
         ticketDescription: null,
-        reviewRound: 1,
+        reviewRound: overrides.reviewRound ?? 1,
         ...(overrides.lensConfig !== undefined
           ? { lensConfig: overrides.lensConfig }
+          : {}),
+        ...(overrides.sessionId !== undefined
+          ? { sessionId: overrides.sessionId }
           : {}),
       },
     },
@@ -435,15 +459,122 @@ describe("handleLensReviewComplete -- tension detection (T-012)", () => {
   });
 });
 
-describe("handleLensReviewComplete -- sessionId coupling (T-009 baseline)", () => {
-  it("sessionId in the verdict equals the input reviewId", async () => {
+describe("handleLensReviewComplete -- sessionId decoupling (T-014)", () => {
+  const UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  it("round-1 with no supplied sessionId mints a UUID distinct from reviewId", async () => {
     const { reviewId, lensIds } = await startPlanReview({
       lensConfig: { lenses: ["security"] },
     });
     const results = lensIds.map((id) => ({ lensId: id, output: ok() }));
     const { body } = await callComplete({ reviewId, results });
     const verdict = ReviewVerdictSchema.parse(body);
-    expect(verdict.sessionId).toBe(reviewId);
+    expect(verdict.sessionId).not.toBe(reviewId);
+    expect(verdict.sessionId).toMatch(UUID_RE);
+  });
+
+  it("round-1 passes a user-supplied sessionId through unchanged", async () => {
+    const explicitSessionId = "11111111-1111-4111-8111-111111111111";
+    const { reviewId, lensIds } = await startPlanReview({
+      lensConfig: { lenses: ["security"] },
+      sessionId: explicitSessionId,
+    });
+    const results = lensIds.map((id) => ({ lensId: id, output: ok() }));
+    const { body } = await callComplete({ reviewId, results });
+    const verdict = ReviewVerdictSchema.parse(body);
+    expect(verdict.sessionId).toBe(explicitSessionId);
+    expect(verdict.sessionId).not.toBe(reviewId);
+  });
+
+  it("round-2 with the prior sessionId yields a distinct reviewId but the same sessionId, and appends a round on disk", async () => {
+    const r1 = await startPlanReview({
+      lensConfig: { lenses: ["security"] },
+    });
+    const r1results = r1.lensIds.map((id) => ({ lensId: id, output: ok() }));
+    const r1out = await callComplete({
+      reviewId: r1.reviewId,
+      results: r1results,
+    });
+    const r1verdict = ReviewVerdictSchema.parse(r1out.body);
+
+    const r2 = await startPlanReview({
+      lensConfig: { lenses: ["security"] },
+      sessionId: r1verdict.sessionId,
+      reviewRound: 2,
+    });
+    const r2results = r2.lensIds.map((id) => ({ lensId: id, output: ok() }));
+    const r2out = await callComplete({
+      reviewId: r2.reviewId,
+      results: r2results,
+    });
+    const r2verdict = ReviewVerdictSchema.parse(r2out.body);
+
+    expect(r2.reviewId).not.toBe(r1.reviewId);
+    expect(r2verdict.sessionId).toBe(r1verdict.sessionId);
+
+    const stored = readSession(r1verdict.sessionId);
+    expect(stored).toBeDefined();
+    expect(stored!.rounds).toHaveLength(2);
+    expect(stored!.rounds[0]!.roundNumber).toBe(1);
+    expect(stored!.rounds[1]!.roundNumber).toBe(2);
+    expect(stored!.rounds[0]!.reviewId).toBe(r1.reviewId);
+    expect(stored!.rounds[1]!.reviewId).toBe(r2.reviewId);
+  });
+
+  it("RULES.md §4: a cache write failure does not turn a successful review into a tool error", async () => {
+    // Pin the structural guarantee: when persistRoundBestEffort throws
+    // underneath (here because cacheDir() can't mkdir on top of a
+    // regular file and `mkdirSync({recursive: true})` raises ENOTDIR),
+    // the tool MUST still return the verdict with isError=false. This
+    // is the integration-level counterpart to cache-session.test.ts's
+    // unit coverage -- a regression that let a cache throw escape the
+    // helper (e.g., a future refactor moving the call back inside the
+    // outer try without its inner guards) would fail THIS test, not a
+    // unit test, so the system-level §4 contract stays defended.
+    const { reviewId, lensIds } = await startPlanReview({
+      lensConfig: { lenses: ["security"] },
+    });
+    const results = lensIds.map((id) => ({ lensId: id, output: ok() }));
+
+    const originalDir = process.env.LENSES_SESSION_DIR;
+    const brokenPath = join(sessionDir, "not-a-dir");
+    writeFileSync(brokenPath, "i am a file, not a directory");
+    process.env.LENSES_SESSION_DIR = brokenPath;
+    try {
+      const { isError, body } = await callComplete({ reviewId, results });
+      expect(isError).toBe(false);
+      const verdict = ReviewVerdictSchema.parse(body);
+      expect(verdict.verdict).toBe("approve");
+      // sessionId is still well-formed on the wire even though the
+      // write under the hood failed -- the wire contract does not
+      // depend on disk success.
+      expect(typeof verdict.sessionId).toBe("string");
+      expect(verdict.sessionId.length).toBeGreaterThan(0);
+    } finally {
+      process.env.LENSES_SESSION_DIR = originalDir;
+    }
+  });
+
+  it("orphaned sessionId (no on-disk record) is accepted and creates a new file", async () => {
+    // Documents the T-014 behavior for round-2+ with a sessionId the
+    // cache has never seen: the server threads it through and writes
+    // a fresh record. T-015 will read at start-time; this test pins
+    // the stable contract so an accidental "reject unknown session"
+    // regression is caught.
+    const orphanSessionId = "22222222-2222-4222-8222-222222222222";
+    const { reviewId, lensIds } = await startPlanReview({
+      lensConfig: { lenses: ["security"] },
+      sessionId: orphanSessionId,
+    });
+    const results = lensIds.map((id) => ({ lensId: id, output: ok() }));
+    const { isError, body } = await callComplete({ reviewId, results });
+    expect(isError).toBe(false);
+    const verdict = ReviewVerdictSchema.parse(body);
+    expect(verdict.sessionId).toBe(orphanSessionId);
+    const stored = readSession(orphanSessionId);
+    expect(stored).toBeDefined();
+    expect(stored!.rounds).toHaveLength(1);
   });
 });
 
@@ -484,7 +615,15 @@ describe("handleLensReviewComplete -- MCP server round-trip", () => {
       if (first?.type !== "text") throw new Error("expected text content");
       const verdict = ReviewVerdictSchema.parse(JSON.parse(first.text));
       expect(verdict.verdict).toBe("approve");
-      expect(verdict.sessionId).toBe(reviewId);
+      // T-014: sessionId diverges from reviewId at the MCP boundary.
+      // Pinned here so a regression that re-coupled them (e.g., a
+      // start-tool refactor losing the `parsed.sessionId ?? uuid()`
+      // fallback) fails over the actual transport, not just a unit
+      // path.
+      expect(verdict.sessionId).not.toBe(reviewId);
+      expect(verdict.sessionId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      );
     } finally {
       await client.close().catch(() => {});
       await server.close().catch(() => {});
