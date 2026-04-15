@@ -18,6 +18,8 @@ import type {
   Verdict,
 } from "../schema/index.js";
 
+import { dedupeFindings } from "./dedup.js";
+
 export interface LensRunResult {
   readonly lensId: LensId;
   readonly output: LensOutput;
@@ -29,10 +31,10 @@ export interface MergerInput {
 }
 
 /**
- * Baseline merger. Flattens findings in lens-iteration order (T-010
- * will introduce dedup across lenses), counts severities in one pass,
- * and derives the verdict from severity presence alone. Tensions are
- * always `[]` until T-012 wires in detection.
+ * Baseline merger. Deduplicates cross-lens findings by `(file, line,
+ * category)` (T-010), counts severities over the post-dedup array, and
+ * derives the verdict from severity presence alone. Tensions are always
+ * `[]` until T-012 wires in detection.
  *
  * `sessionId` is set to `reviewId` for T-009. T-014 will introduce a
  * distinct session cache where sessionId diverges from reviewId; the
@@ -40,7 +42,10 @@ export interface MergerInput {
  * loud, not silent.
  */
 export function runMergerPipeline(input: MergerInput): ReviewVerdict {
-  const findings = input.perLens.flatMap((p) => p.output.findings);
+  // T-010: collapse findings that share (file, line, category) across
+  // lenses. Severity counts drive off the post-dedup array because the
+  // verdict schema's count invariant must match the emitted findings.
+  const findings = dedupeFindings(input.perLens);
 
   const counts: Record<Severity, number> = {
     blocking: 0,

@@ -5,13 +5,15 @@ import {
   DeferralKeySchema,
   LensFindingSchema,
   LensOutputSchema,
+  MergedFindingSchema,
   ReviewVerdictSchema,
   StartParamsSchema,
   TensionSchema,
   type LensFinding,
+  type MergedFinding,
 } from "../src/schema/index.js";
 
-/** Minimal valid finding for reuse across assertions. */
+/** Minimal valid lens-reported finding for reuse across assertions. */
 function finding(overrides: Partial<LensFinding> = {}): LensFinding {
   return {
     id: "f-1",
@@ -22,6 +24,22 @@ function finding(overrides: Partial<LensFinding> = {}): LensFinding {
     description: "desc",
     suggestion: "fix",
     confidence: 0.9,
+    ...overrides,
+  };
+}
+
+/** Minimal valid post-merge finding (adds contributingLenses). */
+function merged(overrides: Partial<MergedFinding> = {}): MergedFinding {
+  return {
+    id: "f-1",
+    severity: "minor",
+    category: "naming",
+    file: "src/x.ts",
+    line: 10,
+    description: "desc",
+    suggestion: "fix",
+    confidence: 0.9,
+    contributingLenses: ["clean-code"],
     ...overrides,
   };
 }
@@ -200,14 +218,72 @@ describe("LensOutputSchema", () => {
   });
 });
 
+describe("MergedFindingSchema", () => {
+  it("parses a well-formed merged finding", () => {
+    expect(MergedFindingSchema.safeParse(merged()).success).toBe(true);
+  });
+
+  it("rejects empty contributingLenses (must be nonempty)", () => {
+    expect(
+      MergedFindingSchema.safeParse({
+        ...merged(),
+        contributingLenses: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects duplicate lens ids inside contributingLenses", () => {
+    expect(
+      MergedFindingSchema.safeParse({
+        ...merged(),
+        contributingLenses: ["security", "security"],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects empty lens id inside contributingLenses", () => {
+    expect(
+      MergedFindingSchema.safeParse({
+        ...merged(),
+        contributingLenses: ["security", ""],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects unknown keys (strict)", () => {
+    expect(
+      MergedFindingSchema.safeParse({ ...merged(), foo: "bar" }).success,
+    ).toBe(false);
+  });
+
+  it("rejects line non-null when file is null (inherits correlation)", () => {
+    expect(
+      MergedFindingSchema.safeParse({
+        ...merged(),
+        file: null,
+        line: 5,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts multiple distinct lens ids", () => {
+    expect(
+      MergedFindingSchema.safeParse({
+        ...merged(),
+        contributingLenses: ["security", "clean-code", "performance"],
+      }).success,
+    ).toBe(true);
+  });
+});
+
 describe("ReviewVerdictSchema", () => {
   it("parses a well-formed verdict with matching counts", () => {
     const result = ReviewVerdictSchema.safeParse({
       verdict: "revise",
       findings: [
-        finding({ id: "a", severity: "major" }),
-        finding({ id: "b", severity: "minor" }),
-        finding({ id: "c", severity: "minor" }),
+        merged({ id: "a", severity: "major" }),
+        merged({ id: "b", severity: "minor" }),
+        merged({ id: "c", severity: "minor" }),
       ],
       tensions: [],
       blocking: 0,
@@ -264,7 +340,7 @@ describe("ReviewVerdictSchema", () => {
   it("rejects counts that don't match findings (one major, major: 0)", () => {
     const result = ReviewVerdictSchema.safeParse({
       verdict: "revise",
-      findings: [finding({ severity: "major" })],
+      findings: [merged({ severity: "major" })],
       tensions: [],
       blocking: 0,
       major: 0,
@@ -278,7 +354,7 @@ describe("ReviewVerdictSchema", () => {
   it("rejects verdict=approve when blocking > 0 (internally inconsistent)", () => {
     const result = ReviewVerdictSchema.safeParse({
       verdict: "approve",
-      findings: [finding({ severity: "blocking" })],
+      findings: [merged({ severity: "blocking" })],
       tensions: [],
       blocking: 1,
       major: 0,
@@ -292,7 +368,7 @@ describe("ReviewVerdictSchema", () => {
   it("rejects verdict=revise when blocking > 0 (blocker must reject)", () => {
     const result = ReviewVerdictSchema.safeParse({
       verdict: "revise",
-      findings: [finding({ severity: "blocking" })],
+      findings: [merged({ severity: "blocking" })],
       tensions: [],
       blocking: 1,
       major: 0,
@@ -306,7 +382,7 @@ describe("ReviewVerdictSchema", () => {
   it("accepts verdict=reject with a blocking finding", () => {
     const result = ReviewVerdictSchema.safeParse({
       verdict: "reject",
-      findings: [finding({ severity: "blocking" })],
+      findings: [merged({ severity: "blocking" })],
       tensions: [],
       blocking: 1,
       major: 0,
@@ -315,6 +391,21 @@ describe("ReviewVerdictSchema", () => {
       sessionId: "r1",
     });
     expect(result.success).toBe(true);
+  });
+
+  it("rejects findings without contributingLenses (post-T-010 invariant)", () => {
+    const result = ReviewVerdictSchema.safeParse({
+      verdict: "revise",
+      // Using LensFinding-shaped helper instead of merged() — no contributingLenses.
+      findings: [finding({ severity: "major" })],
+      tensions: [],
+      blocking: 0,
+      major: 1,
+      minor: 0,
+      suggestion: 0,
+      sessionId: "r1",
+    });
+    expect(result.success).toBe(false);
   });
 });
 

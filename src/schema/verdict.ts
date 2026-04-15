@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { LensFindingSchema, type Severity } from "./finding.js";
+import { MergedFindingSchema, type Severity } from "./finding.js";
 
 /** Top-level verdict returned by `lens_review_complete`. */
 export const VerdictSchema = z.enum(["approve", "revise", "reject"]);
@@ -46,7 +46,7 @@ const SEVERITY_COUNT_FIELDS: readonly Severity[] = [
 export const ReviewVerdictSchema = z
   .object({
     verdict: VerdictSchema,
-    findings: z.array(LensFindingSchema),
+    findings: z.array(MergedFindingSchema),
     tensions: z.array(TensionSchema),
     blocking: z.number().int().min(0),
     major: z.number().int().min(0),

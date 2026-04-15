@@ -14,6 +14,40 @@ export const LensStatusSchema = z.enum(["ok", "error", "skipped"]);
 export type LensStatus = z.infer<typeof LensStatusSchema>;
 
 /**
+ * Shared field shape for lens-reported findings and merger-produced merged
+ * findings. Factored out so `LensFindingSchema` and `MergedFindingSchema` stay
+ * in lockstep -- adding or renaming a field happens here exactly once.
+ */
+const findingObjectShape = {
+  id: z.string().min(1),
+  severity: SeveritySchema,
+  category: z.string().min(1),
+  file: z.string().min(1).nullable(),
+  line: z.number().int().positive().nullable(),
+  description: z.string(),
+  suggestion: z.string(),
+  confidence: z.number().min(0).max(1),
+};
+
+/**
+ * Shared cross-field refinement: a positional line number without a file
+ * coordinate is meaningless. Enforced on both LensFinding and MergedFinding so
+ * the dedup key `(file, line, category)` is always well-formed.
+ */
+function fileLineCorrelation(
+  val: { file: string | null; line: number | null },
+  ctx: z.RefinementCtx,
+): void {
+  if (val.line !== null && val.file === null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["line"],
+      message: "line cannot be set when file is null",
+    });
+  }
+}
+
+/**
  * A single issue reported by one lens.
  *
  * Dedup key (see RULES.md §5 and T-010) is (file, line, category); all three
@@ -21,27 +55,41 @@ export type LensStatus = z.infer<typeof LensStatusSchema>;
  * may only be non-null when `file` is non-null, so the key is always well-formed.
  */
 export const LensFindingSchema = z
+  .object(findingObjectShape)
+  .strict()
+  .superRefine(fileLineCorrelation);
+export type LensFinding = z.infer<typeof LensFindingSchema>;
+
+/**
+ * Post-merger shape (T-010). Carries `contributingLenses` so the agent can see
+ * which lenses independently raised the same (file, line, category) concern.
+ * Lens identity is attached here (not on LensFinding) because the merger is
+ * the first layer where cross-lens attribution makes sense -- a single lens
+ * has no use for the field.
+ *
+ * Invariants:
+ *  - contributingLenses is nonempty (every merged finding comes from ≥1 lens).
+ *  - contributingLenses contains distinct lens ids (duplicates would mislead
+ *    downstream tension/policy layers).
+ *  - Same line/file correlation as LensFinding.
+ */
+export const MergedFindingSchema = z
   .object({
-    id: z.string().min(1),
-    severity: SeveritySchema,
-    category: z.string().min(1),
-    file: z.string().min(1).nullable(),
-    line: z.number().int().positive().nullable(),
-    description: z.string(),
-    suggestion: z.string(),
-    confidence: z.number().min(0).max(1),
+    ...findingObjectShape,
+    contributingLenses: z.array(z.string().min(1)).nonempty(),
   })
   .strict()
   .superRefine((val, ctx) => {
-    if (val.line !== null && val.file === null) {
+    fileLineCorrelation(val, ctx);
+    if (new Set(val.contributingLenses).size !== val.contributingLenses.length) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["line"],
-        message: "line cannot be set when file is null",
+        path: ["contributingLenses"],
+        message: "contributingLenses must be distinct",
       });
     }
   });
-export type LensFinding = z.infer<typeof LensFindingSchema>;
+export type MergedFinding = z.infer<typeof MergedFindingSchema>;
 
 /**
  * One lens run's payload. The lens's identity is carried on the envelope
@@ -105,13 +153,5 @@ export const DeferralKeySchema = z
     category: z.string().min(1),
   })
   .strict()
-  .superRefine((val, ctx) => {
-    if (val.line !== null && val.file === null) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["line"],
-        message: "line cannot be set when file is null",
-      });
-    }
-  });
+  .superRefine(fileLineCorrelation);
 export type DeferralKey = z.infer<typeof DeferralKeySchema>;

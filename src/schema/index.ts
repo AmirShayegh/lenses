@@ -3,11 +3,13 @@ export {
   LensFindingSchema,
   LensOutputSchema,
   LensStatusSchema,
+  MergedFindingSchema,
   SeveritySchema,
   type DeferralKey,
   type LensFinding,
   type LensOutput,
   type LensStatus,
+  type MergedFinding,
   type Severity,
 } from "./finding.js";
 

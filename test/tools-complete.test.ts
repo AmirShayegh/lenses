@@ -288,6 +288,52 @@ describe("handleLensReviewComplete -- resilience", () => {
   });
 });
 
+describe("handleLensReviewComplete -- cross-lens dedup (T-010)", () => {
+  it("two lenses reporting (src/x.ts, 10, auth) merge into one finding with two contributing lenses", async () => {
+    const { reviewId, lensIds } = await startPlanReview({
+      lensConfig: { lenses: ["security", "clean-code"] },
+    });
+    const [first, second] = lensIds;
+    if (!first || !second) throw new Error("need two lens ids");
+    const results = [
+      {
+        lensId: first,
+        output: ok([
+          finding("major", {
+            id: "first-1",
+            file: "src/x.ts",
+            line: 10,
+            category: "auth",
+            confidence: 0.7,
+          }),
+        ]),
+      },
+      {
+        lensId: second,
+        output: ok([
+          finding("minor", {
+            id: "second-1",
+            file: "src/x.ts",
+            line: 10,
+            category: "auth",
+            confidence: 0.95,
+          }),
+        ]),
+      },
+    ];
+    const { body } = await callComplete({ reviewId, results });
+    const verdict = ReviewVerdictSchema.parse(body);
+    expect(verdict.findings).toHaveLength(1);
+    const merged = verdict.findings[0]!;
+    expect(merged.contributingLenses).toEqual([first, second]);
+    // second won on confidence → surviving severity is minor.
+    expect(merged.severity).toBe("minor");
+    expect(verdict.verdict).toBe("approve");
+    expect(verdict.minor).toBe(1);
+    expect(verdict.major).toBe(0);
+  });
+});
+
 describe("handleLensReviewComplete -- sessionId coupling (T-009 baseline)", () => {
   it("sessionId in the verdict equals the input reviewId", async () => {
     const { reviewId, lensIds } = await startPlanReview({

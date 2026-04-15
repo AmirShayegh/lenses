@@ -146,3 +146,91 @@ describe("runMergerPipeline -- sessionId coupling", () => {
     expect(v.sessionId).toBe("arbitrary-id");
   });
 });
+
+describe("runMergerPipeline -- cross-lens dedup (T-010)", () => {
+  it("two lenses colliding on (file, line, category) collapse to one finding; severity counts reflect the winner", () => {
+    const v = runMergerPipeline({
+      reviewId: RID,
+      perLens: [
+        perLens(
+          "security",
+          ok([
+            finding("blocking", {
+              id: "sec-1",
+              file: "src/auth.ts",
+              line: 42,
+              category: "auth-bypass",
+              confidence: 0.95,
+            }),
+          ]),
+        ),
+        perLens(
+          "error-handling",
+          ok([
+            finding("major", {
+              id: "eh-1",
+              file: "src/auth.ts",
+              line: 42,
+              category: "auth-bypass",
+              confidence: 0.7,
+            }),
+          ]),
+        ),
+      ],
+    });
+    expect(v.findings).toHaveLength(1);
+    expect(v.findings[0]!.contributingLenses).toEqual([
+      "security",
+      "error-handling",
+    ]);
+    // security won on confidence: severity = blocking, verdict = reject.
+    expect(v.verdict).toBe("reject");
+    expect(v.blocking).toBe(1);
+    expect(v.major).toBe(0);
+  });
+
+  it("minor-wins-over-major trade-off propagates to the verdict (T-010 known behavior)", () => {
+    // A major-severity low-confidence finding is displaced by a minor-severity
+    // higher-confidence finding at the same key. Post-T-010 the surviving
+    // finding is `minor`, so the verdict is `approve` (no major remains).
+    // T-011 will layer blocking policy on top; this test codifies the trade-off.
+    const v = runMergerPipeline({
+      reviewId: RID,
+      perLens: [
+        perLens(
+          "clean-code",
+          ok([
+            finding("major", {
+              id: "cc-1",
+              file: "src/x.ts",
+              line: 8,
+              category: "complexity",
+              confidence: 0.55,
+            }),
+          ]),
+        ),
+        perLens(
+          "performance",
+          ok([
+            finding("minor", {
+              id: "perf-1",
+              file: "src/x.ts",
+              line: 8,
+              category: "complexity",
+              confidence: 0.92,
+            }),
+          ]),
+        ),
+      ],
+    });
+    expect(v.findings).toHaveLength(1);
+    expect(v.findings[0]!.severity).toBe("minor");
+    expect(v.findings[0]!.contributingLenses).toEqual([
+      "clean-code",
+      "performance",
+    ]);
+    expect(v.verdict).toBe("approve");
+    expect(v.major).toBe(0);
+    expect(v.minor).toBe(1);
+  });
+});
