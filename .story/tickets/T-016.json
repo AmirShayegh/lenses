@@ -1,11 +1,12 @@
 {
   "blockedBy": [
-    "T-009",
-    "T-013"
+    "T-018",
+    "T-021"
   ],
+  "claimedBySession": "efc26ffb-44b6-4cb2-88d4-d837f9c697c8",
   "completedDate": null,
   "createdDate": "2026-04-13",
-  "description": "Update claudestory's autonomous guide CODE_REVIEW and PLAN_REVIEW stages to call lens_review_start + lens_review_complete instead of the current prepare/synthesize/judge chain. Deprecate the old tools.",
+  "description": "**CROSS-REPO TICKET -- lives in lenses but implementation lands in `/Users/amirshayegh/Developer/CPM/claudestory`.** Do not attempt from a lenses-repo autonomous session.\n\nUpdate claudestory's autonomous guide CODE_REVIEW and PLAN_REVIEW stages to call lens_review_start + lens_review_complete instead of the current prepare/synthesize/judge chain. Deprecate the old tools.\n\nBlockers:\n- T-018: `@amirshayegh/lenses` must be published to npm before claudestory can depend on it. `file:../lenses` in a published `package.json` would break on user install.\n- T-021: lenses must expose ReviewVerdictSchema / MergedFinding / LensFinding / DeferralKey types via src/index.ts so the adapter can import them without inlining parallel definitions.\n\nWhen those land, start a fresh session scoped to the claudestory repo and implement per the approved plan at `.story/sessions/efc26ffb-44b6-4cb2-88d4-d837f9c697c8/plan.md`. Staged rollout (v1 coexists with v2 behind `reviewBackendVersion` flag, default `v1`) preserves the security invariants (secrets-gate pre-check) and avoids session-recursion risk (the autonomous guide being modified is the one driving the session).",
   "id": "T-016",
   "order": 10,
   "phase": "integration",

@@ -11,21 +11,10 @@
   "type": "npm",
   "version": 2,
   "recipeOverrides": {
-    "reviewBackends": [
-      "codex",
-      "agent"
-    ],
-    "maxTicketsPerSession": 5,
     "handoverInterval": 3,
-    "stages": {
-      "WRITE_TESTS": {
-        "enabled": true,
-        "command": "npm test"
-      },
-      "TEST": {
-        "enabled": true,
-        "command": "npm test"
-      }
-    }
+    "maxTicketsPerSession": 5,
+    "reviewBackends": [
+      "agent"
+    ]
   }
 }

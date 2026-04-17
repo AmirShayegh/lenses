@@ -1,0 +1,1 @@
+Handover saved: 2026-04-13-02-t005-port-lens-prompts.md -- covers all 5 completed tickets with T-005 detail (8 lens modules, injection hardening via untrusted() + NAME_PATTERN, 174 tests green, 4 review rounds concluding in agent approve).
