@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -100,9 +100,18 @@ describe.skipIf(!distAvailable)("CLI stdio bootstrap (ISS-002)", () => {
       };
       child.stdin.write(`${JSON.stringify(initReq)}\n`);
       const initResp = (await waitForResponse(1)) as {
-        result?: { serverInfo?: { name: string } };
+        result?: { serverInfo?: { name: string; version: string } };
       };
       expect(initResp.result?.serverInfo?.name).toBe("lenses");
+      // T-023 regression pin: the built CLI must advertise the
+      // package.json version (not the prior "0.0.0" hardcoded value).
+      const pkgVersion = (
+        JSON.parse(
+          readFileSync(resolve(here, "..", "package.json"), "utf8"),
+        ) as { version: string }
+      ).version;
+      expect(initResp.result?.serverInfo?.version).toBe(pkgVersion);
+      expect(initResp.result?.serverInfo?.version).not.toBe("0.0.0");
 
       // MCP clients must send `notifications/initialized` before the
       // server will accept further requests.

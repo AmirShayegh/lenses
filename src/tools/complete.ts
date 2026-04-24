@@ -22,6 +22,7 @@ import {
   DEFAULT_MAX_ATTEMPTS,
   ReviewVerdictSchema,
   type CompleteParams,
+  type LensErrorCode,
   type LensOutput,
   type NextAction,
   type ParseError,
@@ -32,6 +33,7 @@ import {
 import {
   applyCompletion,
   persistInFlightBestEffort,
+  rejectionToLensErrorCode,
   type ReviewSession,
   type SubmittedResult,
 } from "../state/review-state.js";
@@ -84,6 +86,33 @@ function errorResult(message: string): CallToolResult {
   return {
     isError: true,
     content: [{ type: "text", text: message }],
+  };
+}
+
+/**
+ * Structured error response for state-machine rejections (ISS-004).
+ * The text content is a JSON string carrying both `errorCode` (one
+ * of the `LensErrorCode` enum values) and the original human-readable
+ * `message`. Callers that want to branch on the code parse the JSON;
+ * callers that just want to display the error see a structured
+ * diagnostic string.
+ *
+ * Argument-validation errors (Zod parse failures on `CompleteParams`)
+ * stay plain text -- those are "your request is malformed" and don't
+ * need a code; the Zod message already describes the issue.
+ */
+function errorResultWithCode(
+  code: LensErrorCode,
+  message: string,
+): CallToolResult {
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ errorCode: code, message }),
+      },
+    ],
   };
 }
 
@@ -370,7 +399,13 @@ export async function handleLensReviewComplete(
       finalize: !willEmitRetries,
     });
     if (!applied.ok) {
-      return errorResult(`lens_review_complete: ${applied.message}`);
+      // State-machine rejection: wrap the message with the structured
+      // LensErrorCode so callers can programmatically distinguish
+      // REVIEW_EXPIRED / DUPLICATE_COMPLETE from generic rejections.
+      return errorResultWithCode(
+        rejectionToLensErrorCode(applied.code),
+        `lens_review_complete: ${applied.message}`,
+      );
     }
 
     session = applied.session;

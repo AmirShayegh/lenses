@@ -32,10 +32,31 @@ import {
   // merger-config.ts
   BlockingPolicySchema,
   DEFAULT_ALWAYS_BLOCK,
+  DEFAULT_MAX_ATTEMPTS,
   DEFAULT_MERGER_CONFIG,
   MergerConfigSchema,
   type BlockingPolicy,
   type MergerConfig,
+  // review-protocol.ts (T-022)
+  DeferralReasonSchema,
+  DeferredFindingSchema,
+  NextActionSchema,
+  ParseErrorPhaseSchema,
+  ParseErrorSchema,
+  ZodIssueWireSchema,
+  type DeferralReason,
+  type DeferredFinding,
+  type NextAction,
+  type ParseError,
+  type ParseErrorPhase,
+  type ZodIssueWire,
+  // params.ts (T-022)
+  GetPromptParamsSchema,
+  type GetPromptParams,
+  // error-code.ts (T-024)
+  LENS_ERROR_MESSAGES,
+  LensErrorCodeSchema,
+  type LensErrorCode,
   // lenses/prompts (type-only)
   type LensId,
 } from "../src/index.js";
@@ -77,6 +98,16 @@ type _TypeOnlyBindings = [
   StartParams,
   BlockingPolicy,
   MergerConfig,
+  // T-022 review protocol
+  DeferralReason,
+  DeferredFinding,
+  NextAction,
+  ParseError,
+  ParseErrorPhase,
+  ZodIssueWire,
+  GetPromptParams,
+  // T-024 error taxonomy
+  LensErrorCode,
 ];
 
 describe("public API re-exports (src/index.ts)", () => {
@@ -132,6 +163,63 @@ describe("public API re-exports (src/index.ts)", () => {
   it("merger-config defaults parse under MergerConfigSchema", () => {
     expect(Array.isArray(DEFAULT_ALWAYS_BLOCK)).toBe(true);
     expect(MergerConfigSchema.safeParse(DEFAULT_MERGER_CONFIG).success).toBe(true);
+    expect(DEFAULT_MAX_ATTEMPTS).toBe(2);
+  });
+
+  it("T-022 review-protocol schemas parse canonical shapes", () => {
+    expect(
+      ParseErrorPhaseSchema.safeParse("envelope").success,
+    ).toBe(true);
+    expect(DeferralReasonSchema.safeParse("below_confidence_floor").success).toBe(true);
+    expect(
+      ZodIssueWireSchema.safeParse({ path: "findings.0.id", message: "too short" })
+        .success,
+    ).toBe(true);
+    expect(
+      ParseErrorSchema.safeParse({
+        lensId: "security",
+        attempt: 1,
+        phase: "finding",
+        zodIssues: [{ path: "findings.0", message: "bad" }],
+      }).success,
+    ).toBe(true);
+    expect(
+      DeferredFindingSchema.safeParse({
+        finding: {
+          id: "f",
+          severity: "minor",
+          category: "style",
+          file: "a.ts",
+          line: 1,
+          description: "d",
+          suggestion: "s",
+          confidence: 0.3,
+          contributingLenses: ["clean-code"],
+        },
+        reason: "below_confidence_floor",
+      }).success,
+    ).toBe(true);
+    expect(
+      NextActionSchema.safeParse({
+        lensId: "security",
+        retryPrompt: "retry",
+        attempt: 2,
+        expiresAt: "2026-04-24T00:00:00.000Z",
+      }).success,
+    ).toBe(true);
+    expect(
+      GetPromptParamsSchema.safeParse({ reviewId: "r", lensId: "security" })
+        .success,
+    ).toBe(true);
+  });
+
+  it("T-024 LensErrorCode is exhaustively mapped to non-empty messages", () => {
+    // Sanity: the exported map covers the enum values 1:1 (compile-
+    // time exhaustiveness lives in test/error-code.test.ts).
+    for (const code of Object.keys(LENS_ERROR_MESSAGES) as LensErrorCode[]) {
+      expect(LensErrorCodeSchema.safeParse(code).success).toBe(true);
+      expect(LENS_ERROR_MESSAGES[code].length).toBeGreaterThan(0);
+    }
   });
 
   it("LensId covers exactly the 8 lens ids bidirectionally", () => {

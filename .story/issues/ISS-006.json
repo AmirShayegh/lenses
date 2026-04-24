@@ -1,0 +1,22 @@
+{
+  "components": [
+    "state",
+    "merger"
+  ],
+  "discoveredDate": "2026-04-24",
+  "id": "ISS-006",
+  "impact": "`src/state/review-state.ts:434-448` only runs the expected-lenses validation when `session.status === \"started\"`. Once the session is in `awaiting_retry` (hop-1 finished with retries pending), a second `lens_review_complete` that omits a different expected lens passes validation. The merger then sees an incomplete view: `perLensLatestOutput` lacks the omitted lens, `cachedResults` may not cover it, and the verdict can ship `approve` on a review where one lens never contributed. Intent was to allow partial retry submissions, but the guard should still require every expected lens to be present across (perLensLatestOutput ∪ cachedResults ∪ current submission) before finalize. Reproducer: start 3-lens review, hop-1 errors lens A, hop-2 resubmits only lens A → lenses B and C that never ran can go missing from the verdict.",
+  "location": [
+    "src/state/review-state.ts:434-448"
+  ],
+  "phase": null,
+  "relatedTickets": [
+    "T-022",
+    "T-024"
+  ],
+  "resolution": "Added finalize-time union coverage check in applyCompletion (src/state/review-state.ts). When finalize=true, the guard verifies every expected lens has a contribution in (params.results ∪ session.perLensLatestOutput ∪ session.cachedResults) — closes the narrow disk-rehydration edge case where an awaiting_retry session could finalize without every expected lens contributing. The existing started-state missing_lenses check stays as the first line of defense for the common case; this new check catches pathological post-restart states.",
+  "resolvedDate": "2026-04-24",
+  "severity": "medium",
+  "status": "resolved",
+  "title": "missing-lenses check gated to status='started'; retry-hop can ship verdict on incomplete lens set"
+}

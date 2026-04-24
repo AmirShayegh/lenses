@@ -1,0 +1,21 @@
+{
+  "components": [
+    "cache",
+    "cross-platform"
+  ],
+  "discoveredDate": "2026-04-24",
+  "id": "ISS-005",
+  "impact": "`src/cache/in-flight.ts:201` computes the parent directory via `final.substring(0, final.lastIndexOf(\"/\"))`. Hard-codes Unix path separators; the rest of the module uses `join()` + `tmpdir()`. On Windows (or any path with a trailing-separator edge case) `lastIndexOf(\"/\")` returns -1, `substring(0, -1)` returns \"\", the temp file lands in cwd, and rename fails. One-line fix: `import { dirname } from \"node:path\"` and `const dir = dirname(final)`. Consistent with `cache/session.ts`.",
+  "location": [
+    "src/cache/in-flight.ts:201"
+  ],
+  "phase": null,
+  "relatedTickets": [
+    "T-024"
+  ],
+  "resolution": "src/cache/in-flight.ts:atomicWriteFile now uses `path.dirname(final)` instead of `final.substring(0, final.lastIndexOf(\"/\"))`. Handles Windows path separators and trailing-slash edge cases. Matches the cross-platform pattern cache/session.ts uses.",
+  "resolvedDate": "2026-04-24",
+  "severity": "low",
+  "status": "resolved",
+  "title": "atomicWriteFile uses string-split instead of path.dirname; breaks on Windows / edge paths"
+}

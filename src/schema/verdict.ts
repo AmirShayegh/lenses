@@ -153,6 +153,17 @@ export const ReviewVerdictSchema = z
     // findings cannot produce a misleading `hadAnyFindings: true,
     // findings: []` -- the caller would otherwise have no signal that
     // something went wrong.
+    //
+    // COUPLING NOTE for future maintainers: this rule assumes every
+    // finding-suppression path writes to `deferred[]`. The three
+    // forward-compat reasons on `DeferralReasonSchema`
+    // (`below_confidence_floor`, `over_finding_budget`,
+    // `non_blocking_suppressed`) are already defined, so a ticket that
+    // adds server-side budget truncation or blocking-severity drops
+    // MUST emit `deferred[]` entries to satisfy this invariant. If a
+    // future suppression path ever drops findings WITHOUT recording
+    // them in `deferred[]`, update this check to include the new sink
+    // in the same commit.
     if (
       val.hadAnyFindings === true &&
       val.findings.length === 0 &&

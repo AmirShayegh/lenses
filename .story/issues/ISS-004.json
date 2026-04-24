@@ -1,0 +1,24 @@
+{
+  "components": [
+    "state",
+    "cache",
+    "error-taxonomy"
+  ],
+  "discoveredDate": "2026-04-24",
+  "id": "ISS-004",
+  "impact": "T-024's `LensErrorCode` enum defines 9 codes but `persistInFlightBestEffort` (src/state/review-state.ts:491-494) only writes `PARSE_FAILURE` and `UNKNOWN_ERROR`. When `applyCompletion` returns `code: \"review_expired\"` or `\"already_complete\"` (which would map to `REVIEW_EXPIRED` / `DUPLICATE_COMPLETE`), `complete.ts:372-374` returns `errorResult(...)` before reaching `persistInFlightBestEffort`, so no task record is written at all. A future disk-hydrated session cannot distinguish \"submission rejected as expired\" from \"submission never arrived.\" Same class of documented-but-unused trust failure T-023 was fixing. Fix: parallel helper `persistRejectedSubmissionBestEffort` on the rejection path.",
+  "location": [
+    "src/state/review-state.ts:491-494",
+    "src/tools/complete.ts:372-374",
+    "src/schema/error-code.ts:17-27"
+  ],
+  "phase": null,
+  "relatedTickets": [
+    "T-024"
+  ],
+  "resolution": "State-machine rejections now return structured `{errorCode, message}` JSON via `errorResultWithCode` in src/tools/complete.ts. New `rejectionToLensErrorCode` helper in src/state/review-state.ts maps each ApplyCompletionResult code onto the closest LensErrorCode enum value: review_expired → REVIEW_EXPIRED, already_complete/stale_attempt → DUPLICATE_COMPLETE, everything else → UNKNOWN_ERROR. Tests in test/tools-complete.test.ts assert the errorCode surface on the wire. Argument-validation errors (Zod parse failures on CompleteParams) stay plain text by design.",
+  "resolvedDate": "2026-04-24",
+  "severity": "medium",
+  "status": "resolved",
+  "title": "7 of 9 LensErrorCode values never emitted; DUPLICATE_COMPLETE / REVIEW_EXPIRED lost on rejection path"
+}

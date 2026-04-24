@@ -33,7 +33,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { z } from "zod";
 
@@ -198,7 +198,11 @@ function atomicWriteFile(
   final: string,
   content: string | Uint8Array,
 ): void {
-  const dir = final.substring(0, final.lastIndexOf("/"));
+  // `path.dirname` handles both `/` and `\\` separators + trailing-slash
+  // edge cases. Prior impl used `final.lastIndexOf("/")` which returned
+  // -1 on Windows paths, producing an empty dir and landing the tmp
+  // file in cwd.
+  const dir = dirname(final);
   const tmp = join(dir, `.tmp-${randomUUID()}`);
   writeFileSync(tmp, content, { mode: 0o600 });
   try {

@@ -450,6 +450,52 @@ describe("handleLensReviewComplete -- T-024 restart recovery", () => {
   });
 });
 
+/**
+ * T-022/T-024 ISS-004: past-`expiresAt` rejection carries the
+ * REVIEW_EXPIRED LensErrorCode and fires at the tool boundary (not
+ * just the unit-tested state-machine layer).
+ */
+describe("handleLensReviewComplete -- T-022 expiresAt rejection", () => {
+  it("submission past expiresAt returns isError with errorCode=REVIEW_EXPIRED", async () => {
+    // lensTimeout: 1 ms -> expiresAt is in the past by the time we
+    // call hop-2. Submission is rejected by the state machine with
+    // `review_expired`, which maps to REVIEW_EXPIRED on the wire.
+    const startResult = await handleLensReviewStart({
+      method: "tools/call",
+      params: {
+        name: "lens_review_start",
+        arguments: {
+          stage: "PLAN_REVIEW",
+          artifact: "## Plan\n\nDo the thing.",
+          ticketDescription: null,
+          reviewRound: 1,
+          lensConfig: { lenses: ["security"], lensTimeout: 1 },
+        },
+      },
+    });
+    const startFirst = startResult.content[0];
+    if (!startFirst || startFirst.type !== "text") throw new Error();
+    const parsed = JSON.parse(String(startFirst.text)) as {
+      reviewId: string;
+      agents: Array<{ id: LensId }>;
+    };
+    // Ensure the 1 ms deadline has elapsed.
+    await new Promise((r) => setTimeout(r, 5));
+
+    const { isError, text } = await callComplete({
+      reviewId: parsed.reviewId,
+      results: [{ lensId: parsed.agents[0]!.id, output: ok() }],
+    });
+    expect(isError).toBe(true);
+    const body = JSON.parse(text) as {
+      errorCode: string;
+      message: string;
+    };
+    expect(body.errorCode).toBe("REVIEW_EXPIRED");
+    expect(body.message).toContain("REVIEW_EXPIRED");
+  });
+});
+
 describe("handleLensReviewComplete -- state machine integration", () => {
   it("unknown reviewId produces the 'review state: unknown reviewId' error", async () => {
     const { isError, text } = await callComplete({
@@ -457,7 +503,15 @@ describe("handleLensReviewComplete -- state machine integration", () => {
       results: [],
     });
     expect(isError).toBe(true);
-    expect(text).toBe(
+    // T-024 ISS-004: state-machine rejections now carry a structured
+    // LensErrorCode in the text payload. `text` is JSON-encoded
+    // `{errorCode, message}`.
+    const body = JSON.parse(text) as {
+      errorCode: string;
+      message: string;
+    };
+    expect(body.errorCode).toBe("UNKNOWN_ERROR");
+    expect(body.message).toBe(
       "lens_review_complete: review state: unknown reviewId: never-issued",
     );
   });
@@ -483,9 +537,22 @@ describe("handleLensReviewComplete -- state machine integration", () => {
     const results = lensIds.map((id) => ({ lensId: id, output: ok() }));
     const first = await callComplete({ reviewId, results });
     expect(first.isError).toBe(false);
-    const second = await callComplete({ reviewId, results });
+    // Second call with a DIFFERENT attempt number so the state-machine
+    // rejection is `already_complete` (not `stale_attempt`).
+    const retryResults = lensIds.map((id) => ({
+      lensId: id,
+      output: ok(),
+      attempt: 2,
+    }));
+    const second = await callComplete({ reviewId, results: retryResults });
     expect(second.isError).toBe(true);
-    expect(second.text).toBe(
+    const body = JSON.parse(second.text) as {
+      errorCode: string;
+      message: string;
+    };
+    // T-024 ISS-004: already_complete maps to DUPLICATE_COMPLETE.
+    expect(body.errorCode).toBe("DUPLICATE_COMPLETE");
+    expect(body.message).toBe(
       `lens_review_complete: review state: reviewId already completed: ${reviewId}`,
     );
   });

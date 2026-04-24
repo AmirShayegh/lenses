@@ -121,6 +121,30 @@ function lruCap(): number {
   return Number.isFinite(n) && n > 0 ? n : 100;
 }
 
+/**
+ * Map each `ApplyCompletionResult` rejection code onto the closest
+ * `LensErrorCode` enum value. Lets `complete.ts` surface the typed
+ * code on the wire envelope (ISS-004) instead of dropping state-
+ * machine rejections into plain-text isError responses with no way
+ * for the caller to classify them programmatically.
+ */
+export function rejectionToLensErrorCode(
+  code: Exclude<ApplyCompletionResult, { ok: true }>["code"],
+): LensErrorCode {
+  switch (code) {
+    case "review_expired":
+      return "REVIEW_EXPIRED";
+    case "already_complete":
+    case "stale_attempt":
+      return "DUPLICATE_COMPLETE";
+    case "unknown":
+    case "missing_lenses":
+    case "non_contiguous_attempt":
+    default:
+      return "UNKNOWN_ERROR";
+  }
+}
+
 const sessions = new Map<string, ReviewSession>();
 
 function touchLru(reviewId: string, session: ReviewSession): void {
@@ -442,6 +466,32 @@ export function applyCompletion(params: {
         ok: false,
         code: "missing_lenses",
         message: `review state: submission missing ${missing.length} expected lens result(s): ${missing.join(", ")}`,
+        missing,
+      };
+    }
+  }
+
+  // Finalize-time union coverage (ISS-006). Once we are about to mark
+  // the session `complete`, every expected lens must have a contribution
+  // somewhere: in the current submission, in a prior submission
+  // (`perLensLatestOutput`), or cached. Without this guard a post-
+  // restart session rehydrated as `awaiting_retry` with partial disk
+  // state could ship a verdict on an incomplete lens set.
+  if (params.finalize) {
+    const covered = new Set<string>();
+    for (const r of params.results) covered.add(r.lensId);
+    for (const lensId of session.perLensLatestOutput.keys()) {
+      covered.add(lensId);
+    }
+    for (const lensId of session.cachedResults.keys()) covered.add(lensId);
+    const missing = session.expectedLensIds.filter(
+      (id) => !covered.has(id),
+    );
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        code: "missing_lenses",
+        message: `review state: finalize missing ${missing.length} expected lens result(s) across submission + prior outputs + cache: ${missing.join(", ")}`,
         missing,
       };
     }
