@@ -164,7 +164,6 @@ function renderCodeReview(opts: SecurityLensOpts): string {
       "- 0.9-1.0: Clear vulnerability with fully traced data flow from input to a sensitive operation.",
       "- 0.7-0.8: Likely vulnerability but data flow crosses file boundaries you cannot fully trace; describe the unverified portion in `description`.",
       "- 0.6-0.7: Pattern matches a known vulnerability class but context may neutralize it; describe the neutralizing context in `description`.",
-      "- Below 0.6: Do NOT report.",
     ].join("\n"),
   );
 

@@ -389,3 +389,18 @@ describe("PreambleConfigSchema and error surface", () => {
     ).toThrow();
   });
 });
+
+describe("buildLensPrompt -- centralized reporting floor (T-030)", () => {
+  it("a non-default confidenceFloor leaves no stale hardcoded floor in any lens body", () => {
+    const prompt = buildLensPrompt({
+      activation: makeActivation("security"),
+      startParams: codeReviewParams(),
+      preambleConfig: PreambleConfigSchema.parse({ confidenceFloor: 0.75 }),
+    }).prompt;
+    // The floor renders dynamically from the shared preamble.
+    expect(prompt).toContain("below 0.75 confidence");
+    // No lens body may carry a stale hardcoded 0.6 floor directive.
+    expect(prompt).not.toContain("Below 0.6: Do NOT report.");
+    expect(prompt).not.toContain("Below 0.6");
+  });
+});

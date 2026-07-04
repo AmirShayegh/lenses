@@ -29,8 +29,8 @@ export type Model = z.infer<typeof ModelSchema>;
  * preamble-framing knobs and live on `PreambleConfigSchema` in
  * `src/lenses/prompt-builder.ts`.
  *
- * `maxLenses` caps active-lens count below the 8-lens total. Unset = no cap.
- * The `.max(8)` upper bound matches the total lens count, so values ≥ 8
+ * `maxLenses` caps active-lens count below the 9-lens total. Unset = no cap.
+ * The `.max(9)` upper bound matches the total lens count, so values ≥ 9
  * behave identically to "unset" (no truncation ever fires).
  *
  * `lensTimeout` is what T-022 will hand to spawned agents via
@@ -59,7 +59,7 @@ export const LensConfigSchema = z
     lenses: z
       .union([z.literal("auto"), z.array(LensIdSchema).nonempty()])
       .optional(),
-    maxLenses: z.number().int().min(1).max(8).optional(),
+    maxLenses: z.number().int().min(1).max(9).optional(),
     lensModels: z.record(LensIdSchema, ModelSchema).optional(),
     lensTimeout: LensTimeoutSchema.optional(),
     hotPaths: z
@@ -73,9 +73,23 @@ export const LensConfigSchema = z
       .max(PERFORMANCE_HOTPATHS_MAX)
       .optional(),
     scannerFindings: z.string().max(8192).optional(),
+    planKind: z.enum(["ui", "backend", "infra"]).optional(),
   })
   .strict();
 export type LensConfig = z.infer<typeof LensConfigSchema>;
+
+/**
+ * Coarse PLAN_REVIEW hint: skip lenses that are obviously inapplicable to a
+ * plan's kind before spawning them. Conservative on purpose -- only
+ * accessibility is excluded, and only for backend/infra plans. This is the
+ * minimal plan-kind filter, not a content-aware selection engine.
+ */
+type PlanKind = NonNullable<LensConfig["planKind"]>;
+const PLAN_KIND_EXCLUSIONS: Record<PlanKind, readonly LensId[]> = {
+  ui: [],
+  backend: ["accessibility"],
+  infra: ["accessibility"],
+};
 
 /**
  * Default per-model timeouts in milliseconds. Opus lenses (security,
@@ -121,6 +135,7 @@ export interface LensActivation {
 interface Surface {
   readonly extensions?: readonly string[];
   readonly pathSegments?: readonly string[];
+  readonly dirSegments?: readonly string[]; // whole directory-name match, root or nested
   readonly basenamePrefixes?: readonly string[];
   readonly exactBasenames?: readonly string[];
 }
@@ -183,6 +198,11 @@ const SURFACE_RULES: Record<LensId, SurfaceRule> = {
       ".scss",
     ],
   },
+  "data-safety": {
+    extensions: [".sql"],
+    dirSegments: ["migrations", "migrate"],
+    exactBasenames: ["schema.prisma"],
+  },
 };
 
 function normalize(p: string): string {
@@ -216,6 +236,10 @@ function matchesSurface(
     const ext = path.posix.extname(f);
     if (s.extensions?.some((e) => e === ext)) return f;
     if (s.pathSegments?.some((seg) => f.includes(seg))) return f;
+    if (s.dirSegments !== undefined) {
+      const dirs = f.split("/").slice(0, -1); // directory segments only (excludes basename)
+      if (s.dirSegments.some((d) => dirs.includes(d))) return f;
+    }
     if (s.basenamePrefixes?.some((p) => base.startsWith(p))) return f;
     if (s.exactBasenames?.some((b) => b === base)) return f;
   }
@@ -285,8 +309,8 @@ function buildOpts(
  * Decide which lenses to activate for a review. Pure -- same input always
  * yields the same output. The list is ordered by `LENSES` declaration order
  * (security, error-handling, clean-code, performance, api-design,
- * concurrency, test-quality, accessibility) so `maxLenses` truncation drops
- * the tail and keeps the highest-priority core lenses.
+ * concurrency, test-quality, accessibility, data-safety) so `maxLenses`
+ * truncation drops the tail and keeps the highest-priority core lenses.
  *
  * `changedFiles` is ignored when `stage === "PLAN_REVIEW"`. The test-quality
  * missing-coverage heuristic (which sets opts.focusMissingCoverage=true)
@@ -315,7 +339,14 @@ export function activate(args: {
     if (explicitAllow !== null) {
       activationReason = "explicit lens allow-list";
     } else if (stage === "PLAN_REVIEW") {
-      activationReason = "plan review: all lenses";
+      const excluded =
+        config.planKind !== undefined
+          ? PLAN_KIND_EXCLUSIONS[config.planKind]
+          : undefined;
+      if (excluded === undefined || !excluded.includes(lensId)) {
+        activationReason = "plan review: all lenses";
+      }
+      // else: filtered by the plan-kind hint; activationReason stays null -> skipped
     } else {
       const rule = SURFACE_RULES[lensId];
       if (rule === "core") {

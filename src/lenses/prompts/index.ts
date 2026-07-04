@@ -23,6 +23,11 @@ import {
   renderConcurrencyBody,
 } from "./concurrency.js";
 import {
+  DataSafetyLensOptsSchema,
+  dataSafetyLensMetadata,
+  renderDataSafetyBody,
+} from "./data-safety.js";
+import {
   ErrorHandlingLensOptsSchema,
   errorHandlingLensMetadata,
   renderErrorHandlingBody,
@@ -125,6 +130,15 @@ export const LENSES = {
       renderAccessibilityBody(
         stage,
         AccessibilityLensOptsSchema.parse(opts === undefined ? {} : opts),
+      ),
+  },
+  "data-safety": {
+    ...dataSafetyLensMetadata,
+    optsSchema: DataSafetyLensOptsSchema,
+    renderBody: (stage, opts) =>
+      renderDataSafetyBody(
+        stage,
+        DataSafetyLensOptsSchema.parse(opts === undefined ? {} : opts),
       ),
   },
 } as const satisfies Record<string, LensDefinition>;

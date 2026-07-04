@@ -77,7 +77,6 @@ function renderCodeReview(): string {
       "- 0.9-1.0: Clear shared mutable state with proven concurrent access and no synchronization.",
       "- 0.7-0.8: Likely concurrent access but calling context not fully confirmed; describe the unverified portion in `description`.",
       "- 0.6-0.7: Pattern could be concurrent but architecture may prevent it; describe the preventing context in `description`.",
-      "- Below 0.6: Do NOT report.",
     ].join("\n"),
   );
 

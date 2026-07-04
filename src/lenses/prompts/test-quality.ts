@@ -54,10 +54,12 @@ function renderCodeReview(opts: TestQualityLensOpts): string {
     "8. **Snapshot abuse** -- Snapshot tests without accompanying behavioral assertions.",
     "9. **Test data coupling** -- Tests sharing fixtures with hidden dependencies.",
     "10. **Missing cleanup** -- Tests leaving side effects: temp files, database rows, global state.",
+    "11. **Fixture provenance** -- Fixtures that fabricate data violating domain invariants, or hand-copied from implementation output rather than derived from the schema or real samples.",
+    "12. **Mutation resistance** -- For each test, name the implementation bug it would catch; flag tests for which no such bug exists.",
   ];
   if (opts.focusMissingCoverage === true) {
     whatToReview.push(
-      '11. **Missing test coverage** -- Changed source files without corresponding test files.',
+      '13. **Missing test coverage** -- Changed source files without corresponding test files.',
     );
   }
   parts.push(whatToReview.join("\n"));

@@ -97,7 +97,7 @@ export function renderSharedPreamble(params: SharedPreambleParams): string {
       "4. When `status` is `\"skipped\"`: `error` must be null; `findings` must be empty. Put the reason in `notes`.",
       "5. When `status` is `\"ok\"`: `error` must be null. `findings` may be empty or populated.",
       `6. Report at most ${params.findingBudget} findings, sorted by severity (blocking first) then by confidence descending.`,
-      `7. Do not report findings below ${params.confidenceFloor} confidence unless you have strong corroborating evidence from tool use.`,
+      `7. Do not report findings below ${params.confidenceFloor} confidence. The one exception is a specific Read or Grep observation, cited in \`description\`, that raises your confidence to at least the floor.`,
       "8. Prefer one root-cause finding over multiple symptom findings.",
     ].join("\n"),
   );
@@ -151,6 +151,25 @@ export function renderSharedPreamble(params: SharedPreambleParams): string {
       "## Tools available",
       "",
       "Read, Grep, Glob -- all read-only. You MUST NOT suggest or attempt any write operations.",
+    ].join("\n"),
+  );
+
+  // 5b. Review method -- shared across every lens and every language. Static
+  // text (no interpolation) so injection/ordering guarantees are unaffected.
+  parts.push(
+    [
+      "## Review method",
+      "",
+      "Before reporting each finding, attempt to refute it:",
+      "- Read the full enclosing function or file, not just the diff hunk.",
+      "- Grep for guards, middleware, or callers that would neutralize the issue.",
+      "- Report the finding only if the refutation attempt fails, and record what you checked in `description`.",
+      "",
+      "Checklist examples use JS/TS idioms for concreteness; translate each pattern to the reviewed language's equivalents (e.g. Python bare except / asyncio.gather / requests without timeout; Go ignored err returns; SQL missing parameterization).",
+      "",
+      "If a ticket description is present, verify the change actually implements it; report divergence as category `spec-conformance`.",
+      "",
+      "If the diff exceeds ~15 files or ~1000 changed lines, prioritize files matching your lens surface and state in notes which files you did not examine; for small diffs (<100 lines), verify every checklist item exhaustively.",
     ].join("\n"),
   );
 

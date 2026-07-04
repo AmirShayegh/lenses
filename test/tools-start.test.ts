@@ -188,11 +188,11 @@ describe("StartToolInputSchema", () => {
 });
 
 describe("handleLensReviewStart -- end-to-end happy path", () => {
-  it("PLAN_REVIEW with no config returns 8 agents and cached=[]", async () => {
+  it("PLAN_REVIEW with no config returns 9 agents and cached=[]", async () => {
     const { isError, body } = await callStart(planReviewArgs());
     expect(isError).toBe(false);
     const parsed = StartToolOutputSchema.parse(body);
-    expect(parsed.agents).toHaveLength(8);
+    expect(parsed.agents).toHaveLength(9);
     expect(parsed.cached).toEqual([]);
   });
 

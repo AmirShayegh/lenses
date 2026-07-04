@@ -80,6 +80,7 @@ const LENS_ID_COVERAGE: Record<LensId, true> = {
   concurrency: true,
   "test-quality": true,
   accessibility: true,
+  "data-safety": true,
 };
 
 /** Tie the type-only imports to the value graph so tsc keeps them resolvable. */
@@ -222,13 +223,14 @@ describe("public API re-exports (src/index.ts)", () => {
     }
   });
 
-  it("LensId covers exactly the 8 lens ids bidirectionally", () => {
+  it("LensId covers exactly the 9 lens ids bidirectionally", () => {
     const keys = Object.keys(LENS_ID_COVERAGE).sort();
     expect(keys).toEqual([
       "accessibility",
       "api-design",
       "clean-code",
       "concurrency",
+      "data-safety",
       "error-handling",
       "performance",
       "security",

@@ -16,6 +16,7 @@ const EXPECTED_IDS = [
   "concurrency",
   "test-quality",
   "accessibility",
+  "data-safety",
 ] as const;
 
 /**
@@ -60,10 +61,15 @@ const EXPECTED_METADATA = {
     maxSeverity: "major",
     type: "surface-activated",
   },
+  "data-safety": {
+    defaultModel: "sonnet",
+    maxSeverity: "blocking",
+    type: "surface-activated",
+  },
 } as const;
 
 describe("LENSES registry", () => {
-  it("has exactly the 8 expected ids", () => {
+  it("has exactly the 9 expected ids", () => {
     expect(Object.keys(LENSES).sort()).toEqual([...EXPECTED_IDS].sort());
   });
 
@@ -110,7 +116,7 @@ describe("LENSES registry", () => {
     }
   });
 
-  it("type-level exhaustiveness: LensId equals the 8 expected ids (bidirectional)", () => {
+  it("type-level exhaustiveness: LensId equals the 9 expected ids (bidirectional)", () => {
     // AssertEqual<A, B> resolves to `true` iff A and B are mutually
     // assignable. If the registry grows a lens without adding it to
     // EXPECTED_IDS (or vice versa), one direction fails and the assignment
@@ -126,7 +132,7 @@ describe("LENSES registry", () => {
 
     // Runtime companion: registry size matches the pin.
     expect(Object.keys(LENSES).length).toBe(EXPECTED_IDS.length);
-    expect(EXPECTED_IDS.length).toBe(8);
+    expect(EXPECTED_IDS.length).toBe(9);
   });
 });
 

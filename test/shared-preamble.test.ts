@@ -357,3 +357,41 @@ describe("renderSharedPreamble", () => {
     }
   });
 });
+
+describe("renderSharedPreamble -- review-method hardening (T-030)", () => {
+  it("renders the refutation block instructing a refute-before-report pass", () => {
+    const out = renderSharedPreamble(planParams());
+    expect(out).toContain("Before reporting each finding, attempt to refute it:");
+    expect(out).toContain(
+      "Read the full enclosing function or file, not just the diff hunk.",
+    );
+  });
+
+  it("renders the language-adaptation sentence", () => {
+    const out = renderSharedPreamble(planParams());
+    expect(out).toContain(
+      "translate each pattern to the reviewed language's equivalents",
+    );
+  });
+
+  it("renders the spec-conformance instruction with the spec-conformance category", () => {
+    const out = renderSharedPreamble(planParams());
+    expect(out).toContain("report divergence as category");
+    expect(out).toContain("spec-conformance");
+  });
+
+  it("renders the diff-size depth-scaling line", () => {
+    const out = renderSharedPreamble(planParams());
+    expect(out).toContain(
+      "If the diff exceeds ~15 files or ~1000 changed lines",
+    );
+  });
+
+  it("output rule 7 states the floor concretely and drops the vague escape hatch", () => {
+    const out = renderSharedPreamble(planParams());
+    expect(out).toContain("Do not report findings below");
+    // The self-granted "strong corroborating evidence from tool use" hatch is
+    // replaced by a concrete Read/Grep-observation exception.
+    expect(out).not.toContain("strong corroborating evidence");
+  });
+});

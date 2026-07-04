@@ -18,6 +18,10 @@ import {
   renderConcurrencyBody,
 } from "../src/lenses/prompts/concurrency.js";
 import {
+  DataSafetyLensOptsSchema,
+  renderDataSafetyBody,
+} from "../src/lenses/prompts/data-safety.js";
+import {
   ErrorHandlingLensOptsSchema,
   renderErrorHandlingBody,
 } from "../src/lenses/prompts/error-handling.js";
@@ -87,6 +91,12 @@ const LENSES = [
     render: (s: Stage) => renderAccessibilityBody(s),
     roleCode: "Accessibility reviewer",
     rolePlan: "Accessibility reviewer evaluating a frontend implementation plan",
+  },
+  {
+    id: "data-safety",
+    render: (s: Stage) => renderDataSafetyBody(s),
+    roleCode: "Data Safety reviewer",
+    rolePlan: "Data Safety reviewer evaluating an implementation plan",
   },
 ] as const;
 
@@ -197,6 +207,19 @@ describe("cross-lens structural invariants", () => {
             `lens=${lens.id} stage=${stage} headings out of order`,
           ).toBe(true);
         }
+      }
+    }
+  });
+
+  it("no lens body (any stage) hardcodes the reporting floor", () => {
+    // The reporting floor is stated once, dynamically, in shared-preamble
+    // rule 7. No lens body may carry a stale hardcoded floor directive.
+    for (const lens of LENSES) {
+      for (const stage of STAGES) {
+        expect(
+          lens.render(stage),
+          `lens=${lens.id} stage=${stage} hardcodes the reporting floor`,
+        ).not.toContain("Below 0.6: Do NOT report.");
       }
     }
   });
@@ -455,14 +478,14 @@ describe("test-quality lens specifics", () => {
       focusMissingCoverage: true,
     });
     expect(withFlag).toContain("### Activation context");
-    expect(withFlag).toContain("11. **Missing test coverage**");
+    expect(withFlag).toContain("13. **Missing test coverage**");
     expect(withFlag).toContain('"missing-test-coverage"');
   });
 
   it("focusMissingCoverage omitted suppresses the Activation context section and item 11", () => {
     const withoutFlag = renderTestQualityBody("CODE_REVIEW");
     expect(withoutFlag).not.toContain("### Activation context");
-    expect(withoutFlag).not.toContain("11. **Missing test coverage**");
+    expect(withoutFlag).not.toContain("13. **Missing test coverage**");
     // The category string is exclusive to the suppressed Activation context
     // block -- confirming its absence guards against a future refactor that
     // moves the category guidance into the always-rendered section.
@@ -474,7 +497,7 @@ describe("test-quality lens specifics", () => {
       focusMissingCoverage: false,
     });
     expect(withFalse).not.toContain("### Activation context");
-    expect(withFalse).not.toContain("11. **Missing test coverage**");
+    expect(withFalse).not.toContain("13. **Missing test coverage**");
     expect(withFalse).not.toContain('"missing-test-coverage"');
   });
 
@@ -486,6 +509,12 @@ describe("test-quality lens specifics", () => {
     expect(on).not.toBe(off);
   });
 
+  it("CODE_REVIEW carries fixture-provenance and mutation-resistance items", () => {
+    const out = renderTestQualityBody("CODE_REVIEW");
+    expect(out).toContain("**Fixture provenance**");
+    expect(out).toContain("name the implementation bug it would catch");
+  });
+
   it("PLAN_REVIEW ignores focusMissingCoverage (no activation section)", () => {
     // Activation context is a CODE_REVIEW concept; plan stage has no diff to
     // cross-reference, so the flag must not leak into plan-stage output.
@@ -493,7 +522,7 @@ describe("test-quality lens specifics", () => {
       focusMissingCoverage: true,
     });
     expect(plan).not.toContain("### Activation context");
-    expect(plan).not.toContain("11. **Missing test coverage**");
+    expect(plan).not.toContain("13. **Missing test coverage**");
     expect(plan).not.toContain('"missing-test-coverage"');
   });
 });
@@ -505,6 +534,7 @@ describe("opts schemas for lenses without opts", () => {
     ["api-design", ApiDesignLensOptsSchema],
     ["concurrency", ConcurrencyLensOptsSchema],
     ["accessibility", AccessibilityLensOptsSchema],
+    ["data-safety", DataSafetyLensOptsSchema],
   ] as const;
 
   it("accept {} and reject unknown keys (strict)", () => {

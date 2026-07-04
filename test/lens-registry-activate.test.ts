@@ -16,6 +16,7 @@ const DECLARATION_ORDER: readonly LensId[] = [
   "concurrency",
   "test-quality",
   "accessibility",
+  "data-safety",
 ];
 
 function ids(acts: readonly LensActivation[]): LensId[] {
@@ -23,7 +24,7 @@ function ids(acts: readonly LensActivation[]): LensId[] {
 }
 
 describe("activate() -- stage-level behavior", () => {
-  it("PLAN_REVIEW returns all 8 lenses regardless of changedFiles", () => {
+  it("PLAN_REVIEW returns all 9 lenses regardless of changedFiles", () => {
     const out = activate({ stage: "PLAN_REVIEW", changedFiles: [] });
     expect(ids(out)).toEqual([...DECLARATION_ORDER]);
   });
@@ -249,6 +250,95 @@ describe("activate() -- surface activation matrix", () => {
   });
 });
 
+describe("activate() -- data-safety segment-aware surface (T-030)", () => {
+  it("activates for a root-level migrations/ dir (non-SQL file)", () => {
+    const out = activate({
+      stage: "CODE_REVIEW",
+      changedFiles: ["migrations/001_add_users.ts"],
+    });
+    expect(ids(out)).toContain("data-safety");
+  });
+
+  it("activates for a root-level migrate/ dir (non-SQL file)", () => {
+    const out = activate({
+      stage: "CODE_REVIEW",
+      changedFiles: ["migrate/001.py"],
+    });
+    expect(ids(out)).toContain("data-safety");
+  });
+
+  it("activates for a nested db/migrations/ .sql file", () => {
+    const out = activate({
+      stage: "CODE_REVIEW",
+      changedFiles: ["db/migrations/20260101_add_users.sql"],
+    });
+    expect(ids(out)).toContain("data-safety");
+  });
+
+  it("activates for an exact schema.prisma basename", () => {
+    const out = activate({
+      stage: "CODE_REVIEW",
+      changedFiles: ["prisma/schema.prisma"],
+    });
+    expect(ids(out)).toContain("data-safety");
+  });
+
+  it("does NOT activate for src/immigrations/ (substring-collision guard)", () => {
+    const out = activate({
+      stage: "CODE_REVIEW",
+      changedFiles: ["src/immigrations/handler.ts"],
+    });
+    expect(ids(out)).not.toContain("data-safety");
+  });
+
+  it("does NOT activate for a pure UI diff", () => {
+    const out = activate({
+      stage: "CODE_REVIEW",
+      changedFiles: ["src/Button.tsx", "styles/main.css"],
+    });
+    expect(ids(out)).not.toContain("data-safety");
+  });
+});
+
+describe("activate() -- PLAN_REVIEW plan-kind hint (T-030)", () => {
+  it("planKind:backend excludes accessibility but keeps security", () => {
+    const out = activate({
+      stage: "PLAN_REVIEW",
+      changedFiles: [],
+      config: { planKind: "backend" },
+    });
+    expect(ids(out)).not.toContain("accessibility");
+    expect(ids(out)).toContain("security");
+  });
+
+  it("planKind:infra excludes accessibility", () => {
+    const out = activate({
+      stage: "PLAN_REVIEW",
+      changedFiles: [],
+      config: { planKind: "infra" },
+    });
+    expect(ids(out)).not.toContain("accessibility");
+  });
+
+  it("planKind:ui keeps accessibility", () => {
+    const out = activate({
+      stage: "PLAN_REVIEW",
+      changedFiles: [],
+      config: { planKind: "ui" },
+    });
+    expect(ids(out)).toContain("accessibility");
+  });
+
+  it("planKind schema: valid value accepted, unknown value rejected", () => {
+    expect(
+      LensConfigSchema.safeParse({ planKind: "backend" }).success,
+    ).toBe(true);
+    expect(
+      LensConfigSchema.safeParse({ planKind: "nope" }).success,
+    ).toBe(false);
+  });
+});
+
 describe("activate() -- config overrides", () => {
   it('lenses: ["security"] returns exactly [security] even when other lenses would activate', () => {
     const out = activate({
@@ -434,8 +524,12 @@ describe("LensConfigSchema -- strict validation", () => {
     expect(LensConfigSchema.safeParse({ maxLenses: 0 }).success).toBe(false);
   });
 
-  it("maxLenses: 9 rejected (max 8)", () => {
-    expect(LensConfigSchema.safeParse({ maxLenses: 9 }).success).toBe(false);
+  it("maxLenses: 10 rejected (max 9)", () => {
+    expect(LensConfigSchema.safeParse({ maxLenses: 10 }).success).toBe(false);
+  });
+
+  it("maxLenses: 9 accepted (equals total lens count)", () => {
+    expect(LensConfigSchema.safeParse({ maxLenses: 9 }).success).toBe(true);
   });
 
   it("maxLenses: 2.5 rejected (int required)", () => {
