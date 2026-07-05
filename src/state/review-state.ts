@@ -83,6 +83,13 @@ export interface ReviewSession {
   readonly perLensTimeoutMs: ReadonlyMap<LensId, number>;
   /** T-027: lenses terminally expired (AGENT_TIMEOUT). */
   readonly perLensExpired: ReadonlySet<LensId>;
+  /**
+   * T-027 codex round 2: the durable anchor once-guard per lens,
+   * hydrated from index lensMeta.anchoredAttempt. Present iff the
+   * prompt-fetch anchor already ran for that lens's attempt 1; the
+   * fetch path never extends a deadline once this is set.
+   */
+  readonly perLensAnchoredAttempt: ReadonlyMap<LensId, number>;
   /** T-027: the durably committed verdict, when status is complete. */
   readonly completedVerdict: ReviewVerdict | null;
   readonly completedAtMs: number | null;
@@ -302,6 +309,7 @@ export function registerReview(params: {
     perLensLatestOutput: new Map(),
     perLensTimeoutMs,
     perLensExpired: new Set(),
+    perLensAnchoredAttempt: new Map(),
     completedVerdict: null,
     completedAtMs: null,
   };
@@ -424,6 +432,7 @@ function hydrateFromDisk(reviewId: string): ReviewSession | undefined {
   const promptHashes = new Map<LensId, string>();
   const perLensExpiresAt = new Map<LensId, number>();
   const perLensTimeoutMs = new Map<LensId, number>();
+  const perLensAnchoredAttempt = new Map<LensId, number>();
   for (const [lensId, meta] of Object.entries(index.lensMeta)) {
     const p = readPrompt(reviewId, lensId);
     if (p !== undefined) prompts.set(lensId as LensId, p);
@@ -438,6 +447,11 @@ function hydrateFromDisk(reviewId: string): ReviewSession | undefined {
       lensId as LensId,
       meta.timeoutMs ?? resolveLensTimeoutMs(meta.model, undefined),
     );
+    // T-027 codex round 2: the durable anchor once-guard, written
+    // atomically with the anchored expiresAt.
+    if (meta.anchoredAttempt !== undefined) {
+      perLensAnchoredAttempt.set(lensId as LensId, meta.anchoredAttempt);
+    }
   }
 
   const cachedResults = new Map<LensId, CachedLensEntry>();
@@ -514,6 +528,7 @@ function hydrateFromDisk(reviewId: string): ReviewSession | undefined {
     perLensLatestOutput,
     perLensTimeoutMs,
     perLensExpired,
+    perLensAnchoredAttempt,
     completedVerdict: completion !== undefined ? completion.verdict : null,
     completedAtMs: Number.isFinite(completedAtMs) ? completedAtMs : null,
   };
@@ -835,21 +850,25 @@ export function commitReviewCompletion(params: {
  * `lens_review_get_prompt`; returns the AUTHORITATIVE deadline for the
  * lens (R-B2 Option A puts it on the wire).
  *
- * Anchoring is once-per-attempt and never resurrects: re-anchor only
- * when (a) the lens has no terminal attempt and its attempt-1 task
- * record is still "pending" (the pending -> in_flight flip is the
- * durable once-marker), and (b) now <= the current deadline. A fetch
- * after the deadline returns the old deadline intact (the lens is then
- * expired by the R9 sweep). Retry attempts never anchor here; the
- * retry deadline is minted exactly once in `mintRetryDeadline`.
+ * Anchoring is once-per-attempt and never resurrects: anchor only when
+ * (a) the durable guard (index lensMeta.anchoredAttempt) is absent,
+ * (b) the lens has no terminal attempt, and (c) now <= the current
+ * deadline. A fetch after the deadline returns the old deadline intact
+ * (the lens is then expired by the R9 sweep). Retry attempts never
+ * anchor here; the retry deadline is minted exactly once in
+ * `mintRetryDeadline`.
  *
- * R5 failure order (codex round, resolution 4): DURABILITY FIRST. The
- * index.lensMeta RMW (the value hydration reads) is written before
- * anything else; if it fails, no anchor happens at all and the caller
- * gets the pre-existing deadline, so the wire value always matches
- * durable state. The pending -> in_flight once-marker flip runs second
- * and is best-effort. The in-memory anchored set guards repeated calls
- * within the process even when disk reads misbehave.
+ * R5 failure order (codex rounds 1 + 2): DURABILITY FIRST, and the
+ * once-guard is ATOMIC with the deadline. `index.lensMeta` gets BOTH
+ * `expiresAt` and `anchoredAttempt` in one RMW write: if that write
+ * fails, no anchor happens at all and the caller gets the pre-existing
+ * deadline (a later fetch may retry); if it succeeds, the guard and
+ * the extension are inseparable, so a restart can never observe an
+ * extended deadline without the guard and re-extend it. The task
+ * record's pending -> in_flight flip is BOOKKEEPING, not the guard:
+ * its failure is harmless and is retried on a later fetch without
+ * touching the deadline. The in-memory anchored set only fast-paths
+ * repeated calls within the process.
  */
 export function anchorLensDeadlineOnFetch(
   reviewId: string,
@@ -863,6 +882,16 @@ export function anchorLensDeadlineOnFetch(
   if (anchoredLenses.has(key)) {
     // Re-read: the deadline may have been re-minted by a retry.
     return getReview(reviewId)?.perLensExpiresAt.get(lensId);
+  }
+
+  // Codex round 2: the durable once-guard. If the index says attempt 1
+  // already anchored (this process or a previous one), never extend
+  // again; just retry the bookkeeping seed flip if it was lost and
+  // return the current (anchored or retry-minted) deadline.
+  if (session.perLensAnchoredAttempt.get(lensId) !== undefined) {
+    anchoredLenses.add(key);
+    completeSeedFlipBestEffort(reviewId, lensId, current);
+    return current;
   }
 
   // Eligibility (R8): attempt 1 only, in-window only.
@@ -880,8 +909,8 @@ export function anchorLensDeadlineOnFetch(
     seed = undefined;
   }
   if (seed !== undefined && seed.status !== "pending") {
-    // Already flipped by a previous process/call: the flip blocks
-    // re-anchoring even across restarts.
+    // Legacy once-marker: a record flipped by a pre-guard build (no
+    // anchoredAttempt in its index) still blocks re-anchoring.
     anchoredLenses.add(key);
     return current;
   }
@@ -891,18 +920,18 @@ export function anchorLensDeadlineOnFetch(
     resolveLensTimeoutMs("sonnet", undefined);
   const newDeadline = now + timeoutMs;
 
-  // Codex round (resolution 4): DURABILITY FIRST. The deadline handed
-  // to the caller must match durable state, so the index RMW runs
-  // before anything else. If it fails, NO anchor happens at all: no
-  // memory extension, no anchored-set mark, and the caller gets the
-  // pre-existing deadline (conservative, consistent with R-B2). A
-  // later fetch may retry the anchor once the disk is healthy. A
-  // MISSING index is the memory-only session path: the RMW is a silent
-  // no-op there and the memory anchor below is the only state that
-  // exists, so wire and "durable" state cannot disagree.
+  // DURABILITY FIRST, guard + deadline ATOMIC (codex rounds 1 + 2):
+  // one RMW writes both `expiresAt` and `anchoredAttempt`. On failure,
+  // NO anchor happens: no memory extension, no anchored-set mark, and
+  // the caller gets the pre-existing deadline (conservative, R-B2); a
+  // later fetch may retry once the disk is healthy. A MISSING index is
+  // the memory-only session path: the RMW is a silent no-op there and
+  // the memory anchor below is the only state that exists, so wire and
+  // "durable" state cannot disagree.
   try {
     updateIndexLensMeta(reviewId, lensId, {
       expiresAt: new Date(newDeadline).toISOString(),
+      anchoredAttempt: 1,
     });
   } catch (err) {
     logSwallow(`anchor index RMW(${lensId})`, err);
@@ -915,14 +944,18 @@ export function anchorLensDeadlineOnFetch(
       lensId,
       newDeadline,
     ),
+    perLensAnchoredAttempt: new Map(session.perLensAnchoredAttempt).set(
+      lensId,
+      1,
+    ),
   });
-  // Once-marker second: flip the attempt-1 record pending -> in_flight.
-  // A failure here is logged and tolerated: the durable deadline is
-  // already extended, so wire and durable state agree; the residual
-  // risk is a post-restart re-anchor in this corner (no once-marker
-  // landed), never a wire/durable mismatch. `seed` is undefined only
-  // when the registration write was lost or the session is memory-only;
-  // there is no record to flip then.
+  // Bookkeeping second (NOT the guard): flip the attempt-1 record
+  // pending -> in_flight. A failure here is logged and harmless -- the
+  // guard already landed atomically with the deadline, and a later
+  // fetch retries the flip via the guard branch above without touching
+  // the deadline. `seed` is undefined only when the registration write
+  // was lost or the session is memory-only; there is no record to flip
+  // then.
   if (seed !== undefined) {
     try {
       writeTask({
@@ -935,6 +968,31 @@ export function anchorLensDeadlineOnFetch(
     }
   }
   return newDeadline;
+}
+
+/**
+ * T-027 codex round 2: retry the anchor's bookkeeping seed flip for a
+ * lens whose durable guard is already set. Pure bookkeeping: never
+ * touches deadlines; every failure is logged and swallowed.
+ */
+function completeSeedFlipBestEffort(
+  reviewId: string,
+  lensId: LensId,
+  deadlineMs: number | undefined,
+): void {
+  try {
+    const seed = readTask(reviewId, lensId, 1);
+    if (seed === undefined || seed.status !== "pending") return;
+    writeTask({
+      ...seed,
+      status: "in_flight",
+      ...(deadlineMs !== undefined
+        ? { expiresAt: new Date(deadlineMs).toISOString() }
+        : {}),
+    });
+  } catch (err) {
+    logSwallow(`anchor flip retry(${lensId})`, err);
+  }
 }
 
 /**

@@ -175,6 +175,14 @@ export const IndexRecordSchema = z
           // N with a missing terminal attempt N-1 so an in-window
           // retry is never rejected as non-contiguous after a restart.
           pendingAttempt: z.number().int().min(2).optional(),
+          // T-027 codex round 2: the durable ONCE-GUARD for the
+          // prompt-fetch anchor, written in the SAME index RMW as the
+          // anchored expiresAt so guard and deadline are atomic. The
+          // fetch path re-anchors ONLY when this is absent; hydration
+          // reads it back, so a restart can never re-extend an already
+          // anchored deadline (the task-record pending -> in_flight
+          // flip is bookkeeping, not the guard).
+          anchoredAttempt: z.number().int().min(1).optional(),
         })
         .strict(),
     ),
@@ -385,6 +393,7 @@ export function updateIndexLensMeta(
   patch: {
     readonly expiresAt?: string;
     readonly pendingAttempt?: number;
+    readonly anchoredAttempt?: number;
   },
 ): void {
   if (failNextIndexRmw !== null && failNextIndexRmw.reviewId === reviewId) {
@@ -400,6 +409,9 @@ export function updateIndexLensMeta(
     ...(patch.expiresAt !== undefined ? { expiresAt: patch.expiresAt } : {}),
     ...(patch.pendingAttempt !== undefined
       ? { pendingAttempt: patch.pendingAttempt }
+      : {}),
+    ...(patch.anchoredAttempt !== undefined
+      ? { anchoredAttempt: patch.anchoredAttempt }
       : {}),
   };
   writeIndex({

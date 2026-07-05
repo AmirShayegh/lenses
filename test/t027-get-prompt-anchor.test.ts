@@ -4,7 +4,11 @@ import { join } from "node:path";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { _failNextIndexRmwForTests } from "../src/cache/in-flight.js";
+import {
+  readTask,
+  _failNextIndexRmwForTests,
+  _failNextTaskWriteForTests,
+} from "../src/cache/in-flight.js";
 import { ReviewVerdictSchema } from "../src/schema/index.js";
 import {
   getReview,
@@ -135,6 +139,36 @@ describe("T-027 prompt-fetch anchoring", () => {
     await sleep(5);
     const gp3 = await getPrompt(reviewId);
     expect(gp3.expiresAt).toBe(gp2.expiresAt);
+  });
+
+  // Codex round 2: the once-guard is atomic with the deadline in the
+  // index RMW. A lost seed flip after a successful RMW must NOT allow
+  // a post-restart fetch to re-anchor and extend the deadline again.
+  it("codex round 2: seed-flip failure after a successful index RMW never re-extends after a restart", async () => {
+    const { reviewId, hop1ExpiresAt } = await startSecurity();
+    _failNextTaskWriteForTests({ reviewId, lensId: "security", attempt: 1 });
+    const gp1 = await getPrompt(reviewId);
+    expect(gp1.expiresAt).toBeDefined();
+    expect(Date.parse(gp1.expiresAt!)).toBeGreaterThanOrEqual(
+      Date.parse(hop1ExpiresAt),
+    );
+    // The flip was lost: the seed record is still pending on disk.
+    expect(readTask(reviewId, "security", 1)?.status).toBe("pending");
+
+    // Simulated restart: fresh hydration, then a second fetch. The
+    // durable guard forbids re-anchoring: same deadline on the wire.
+    _clearMapOnlyForTests();
+    await sleep(5);
+    const gp2 = await getPrompt(reviewId);
+    expect(gp2.expiresAt).toBe(gp1.expiresAt);
+    // The bookkeeping seed flip completed harmlessly on that fetch.
+    expect(readTask(reviewId, "security", 1)?.status).toBe("in_flight");
+
+    // And hydration still agrees with the anchored deadline.
+    _clearMapOnlyForTests();
+    expect(getReview(reviewId)?.perLensExpiresAt.get("security")).toBe(
+      Date.parse(gp1.expiresAt!),
+    );
   });
 
   it("R8: a fetch after the deadline returns the prompt but leaves the old deadline intact", async () => {
