@@ -15,7 +15,12 @@ import {
   type RoundRecord,
 } from "../cache/session.js";
 import { LENSES, type LensId } from "../lenses/prompts/index.js";
-import { runMergerPipeline, type LensRunResult } from "../merger/pipeline.js";
+import { sanitizeFindingForStorage } from "../merger/anchor.js";
+import {
+  runMergerPipeline,
+  type AnchoringInput,
+  type LensRunResult,
+} from "../merger/pipeline.js";
 import { LensOutputSchema } from "../schema/finding.js";
 import {
   CompleteParamsSchema,
@@ -271,7 +276,12 @@ function persistLensCacheBestEffort(
         writeLensCache({
           lensId: entry.lensId,
           promptHash,
-          findings: entry.output.findings,
+          // T-026 R-C4(b): the lens-cache WRITE choke point. Sanitize before
+          // persisting so a server-owned field can never round-trip the
+          // cache into a later round's `cached[]`. Ingestion already
+          // sanitized perLensLatestOutput, so this is defense-in-depth --
+          // mandated as the second of the two lens-cache choke points.
+          findings: entry.output.findings.map(sanitizeFindingForStorage),
           notes: entry.output.notes,
         });
       } catch (err) {
@@ -403,9 +413,25 @@ export async function handleLensReviewComplete(
 
       const res = LensOutputSchema.safeParse(r.output);
       if (res.success) {
+        // T-026 R-C2: the SUBMISSION-CONSTRUCTION choke point, BEFORE
+        // applyCompletion. Strip server-owned finding fields here so every
+        // downstream store holds sanitized findings -- the in-memory
+        // perLensLatestOutput (read by a same-process round 2), the
+        // persisted TaskRecords written by persistInFlightBestEffort inside
+        // applyCompletion, the restart rehydration that reads them back, and
+        // the merge inputs. A lens can therefore never inject a value the
+        // server alone mints (anchorRealignedFrom, integrityKey). The anchor
+        // pass's own strip stays as defense-in-depth. Same canonical helper
+        // as the two lens-cache choke points.
+        const sanitizedOutput: LensOutput = {
+          ...(res.data as LensOutput),
+          findings: (res.data.findings as LensOutput["findings"]).map(
+            sanitizeFindingForStorage,
+          ),
+        };
         submissions.push({
           lensId: r.lensId as LensId,
-          output: res.data as LensOutput,
+          output: sanitizedOutput,
           attempt,
         });
         agentSubmittedLensIds.add(r.lensId as LensId);
@@ -550,6 +576,18 @@ export async function handleLensReviewComplete(
       const lensCoverage = buildLensCoverage(session);
       assertLensCoverageExactSet(session.expectedLensIds, lensCoverage);
 
+      // T-026 R11: the complete-time anchoring context from the retained
+      // ReviewSession. The anchor pass verifies lens quotes against the SAME
+      // artifact string the lenses reviewed (prompt-consistency anchoring,
+      // R-D1a). CODE_REVIEW with a non-empty artifact enforces; PLAN_REVIEW
+      // or an empty (pre-upgrade / truncation-lost) artifact is
+      // normalize-only.
+      const anchoring: AnchoringInput = {
+        stage: session.stage,
+        artifact: session.artifact,
+        changedFiles: session.changedFiles,
+      };
+
       const verdict = runMergerPipeline(
         parsed.mergerConfig === undefined
           ? {
@@ -560,6 +598,7 @@ export async function handleLensReviewComplete(
               nextActions,
               lensCoverage,
               reviewComplete: finalizing,
+              anchoring,
             }
           : {
               reviewId: parsed.reviewId,
@@ -570,6 +609,7 @@ export async function handleLensReviewComplete(
               nextActions,
               lensCoverage,
               reviewComplete: finalizing,
+              anchoring,
             },
       );
 

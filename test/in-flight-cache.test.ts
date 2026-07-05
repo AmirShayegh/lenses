@@ -15,6 +15,8 @@ import {
 import {
   CURRENT_IN_FLIGHT_SCHEMA_VERSION,
   cleanupStaleInFlight,
+  fitArtifactToIndexBudget,
+  INDEX_BYTE_BUDGET,
   IndexRecordSchema,
   inFlightDir,
   readAllTasks,
@@ -61,6 +63,11 @@ function makeIndex(overrides: Partial<IndexRecord> = {}): IndexRecord {
     reviewRound: 1,
     priorDeferrals: [],
     createdAt: new Date().toISOString(),
+    // T-026 R9: artifact + changedFiles are defaulted in IndexRecordSchema
+    // but required on the inferred OUTPUT type, so the fixture must supply
+    // them or `npm run typecheck` fails and the roundtrip toEqual breaks.
+    artifact: "",
+    changedFiles: [],
     cachedResults: {},
     lensMeta: {
       security: {
@@ -100,6 +107,50 @@ function makeTask(
     ...overrides,
   };
 }
+
+describe("fitArtifactToIndexBudget (T-026 R7 / pen res 4)", () => {
+  const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+  it("returns an under-budget record unchanged (reference identity)", () => {
+    const rec = makeIndex({ artifact: "small diff" });
+    expect(fitArtifactToIndexBudget(rec)).toBe(rec);
+  });
+
+  it("fits an oversized plain artifact under the read gate and it rehydrates", () => {
+    const rec = makeIndex({ artifact: "x".repeat(MAX_FILE_BYTES + 1000) });
+    const fitted = fitArtifactToIndexBudget(rec);
+    const bytes = Buffer.byteLength(JSON.stringify(fitted), "utf8");
+    expect(bytes).toBeLessThanOrEqual(INDEX_BYTE_BUDGET);
+    writeIndex(fitted);
+    const back = readIndex(RID);
+    expect(back).toBeDefined();
+    expect(back!.artifact.length).toBeLessThan(rec.artifact.length);
+  });
+
+  it("fits an escape-heavy (control-character) artifact under budget and rehydrates", () => {
+    // Each control char serializes to \u00XX (6 bytes), so ~2M chars overflow.
+    const rec = makeIndex({ artifact: "\u0001".repeat(2_000_000) });
+    const fitted = fitArtifactToIndexBudget(rec);
+    const bytes = Buffer.byteLength(JSON.stringify(fitted), "utf8");
+    expect(bytes).toBeLessThanOrEqual(INDEX_BYTE_BUDGET);
+    writeIndex(fitted);
+    expect(readIndex(RID)).toBeDefined();
+  });
+
+  it("fits a multibyte artifact under budget without splitting a code point", () => {
+    // Astral code points are 2 UTF-16 units / 4 UTF-8 bytes each.
+    const rec = makeIndex({ artifact: "\u{1F600}".repeat(3_000_000) });
+    const fitted = fitArtifactToIndexBudget(rec);
+    const bytes = Buffer.byteLength(JSON.stringify(fitted), "utf8");
+    expect(bytes).toBeLessThanOrEqual(INDEX_BYTE_BUDGET);
+    // No lone surrogate left at the tail: re-encoding round-trips cleanly.
+    expect(Buffer.from(fitted.artifact, "utf8").toString("utf8")).toBe(
+      fitted.artifact,
+    );
+    writeIndex(fitted);
+    expect(readIndex(RID)).toBeDefined();
+  });
+});
 
 describe("inFlightDir", () => {
   it("creates the directory if missing and returns the path", () => {

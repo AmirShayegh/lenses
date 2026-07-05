@@ -395,3 +395,46 @@ describe("renderSharedPreamble -- review-method hardening (T-030)", () => {
     expect(out).not.toContain("strong corroborating evidence");
   });
 });
+
+describe("renderSharedPreamble -- T-026 evidence-anchoring contract", () => {
+  it("finding-format example carries the snippet field verbatim (SCOPE 5b)", () => {
+    const out = renderSharedPreamble(planParams());
+    expect(out).toContain(
+      '  "snippet": { "quote": "the exact source line at line 42, verbatim", "startLine": 42 },',
+    );
+  });
+
+  it("pins the line coordinate-system sentence verbatim (SCOPE 5a)", () => {
+    const out = renderSharedPreamble(planParams());
+    expect(out).toContain(
+      "`line` is the 1-based line number in the post-change (new) version of `file`, as shown by Read; never use diff-hunk-relative or old-file numbering.",
+    );
+  });
+
+  it("pins the snippet mandate with the >400-char rule verbatim (SCOPE 5b + R3)", () => {
+    const out = renderSharedPreamble(planParams());
+    expect(out).toContain(
+      "Quote the exact source line at `line` verbatim into `snippet.quote` and set `snippet.startLine` equal to `line`. If the source line exceeds 400 characters, quote exactly its first 400 characters.",
+    );
+  });
+
+  it("renders the CODE_REVIEW-only diff-scope sentence for CODE_REVIEW (R-D2a)", () => {
+    const out = renderSharedPreamble(codeParams());
+    expect(out).toContain(
+      "For CODE_REVIEW, `line` and `snippet` may only reference post-change content shown in the Diff (added and context lines); if the defect sits in a changed file but outside the lines the Diff shows, set `line: null`, omit `snippet`, and name the exact location in `description` instead.",
+    );
+  });
+
+  it("omits the CODE_REVIEW-only diff-scope sentence from PLAN_REVIEW (R-D2a)", () => {
+    const out = renderSharedPreamble(planParams());
+    expect(out).not.toContain("may only reference post-change content shown in the Diff");
+  });
+
+  it("never uses the banned token 'evidence' in the preamble (denylist safety)", () => {
+    // The field is named `snippet`, never `evidence` (test/lens-bodies.test.ts
+    // V1 denylist). The DeferralReason value `evidence_unverified` lives in
+    // schema code, not in any rendered prompt.
+    expect(renderSharedPreamble(planParams())).not.toContain("evidence");
+    expect(renderSharedPreamble(codeParams())).not.toContain("evidence");
+  });
+});

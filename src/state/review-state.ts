@@ -26,6 +26,7 @@ import {
 } from "node:fs";
 
 import {
+  fitArtifactToIndexBudget,
   hasIndexFile,
   inFlightDir,
   readAllTasks,
@@ -74,6 +75,16 @@ export interface ReviewSession {
   readonly priorDeferrals: readonly DeferralKey[];
   readonly startedAt: number;
   readonly status: ReviewStatus;
+  /**
+   * T-026 R11: the retained hop-1 artifact (CODE_REVIEW diff or PLAN_REVIEW
+   * plan text), so the complete-time anchor pass can verify snippets with
+   * zero repo access. Empty string when a pre-upgrade session rehydrated
+   * without one, or after R7 truncation loss -> the anchor pass then runs
+   * normalize-only. Cross-ticket contract with T-032; do not reshape.
+   */
+  readonly artifact: string;
+  /** T-026 R11: the retained hop-1 changedFiles (empty for PLAN_REVIEW). */
+  readonly changedFiles: readonly string[];
   readonly cachedResults: ReadonlyMap<LensId, CachedLensEntry>;
   readonly promptHashes: ReadonlyMap<LensId, string>;
   readonly prompts: ReadonlyMap<LensId, string>;
@@ -277,6 +288,11 @@ export function registerReview(params: {
   readonly perLensExpiresAt?: ReadonlyMap<LensId, number>;
   readonly lensModels?: ReadonlyMap<LensId, "opus" | "sonnet">;
   readonly perLensTimeoutMs?: ReadonlyMap<LensId, number>;
+  // T-026 R11: retained artifact + changedFiles. Optional here (defaulting
+  // to ""/[]) so pre-T-026 direct-API callers and test helpers still
+  // compile; the tool path (start.ts) always supplies them.
+  readonly artifact?: string;
+  readonly changedFiles?: readonly string[];
 }): void {
   if (sessions.has(params.reviewId)) {
     throw new Error(
@@ -302,6 +318,8 @@ export function registerReview(params: {
     priorDeferrals: params.priorDeferrals,
     startedAt: Date.now(),
     status: "started",
+    artifact: params.artifact ?? "",
+    changedFiles: params.changedFiles ?? [],
     cachedResults: params.cachedResults ?? new Map(),
     promptHashes: params.promptHashes ?? new Map(),
     prompts: params.prompts ?? new Map(),
@@ -366,10 +384,15 @@ function persistRegistrationBestEffort(
       reviewRound: session.reviewRound,
       priorDeferrals: [...session.priorDeferrals],
       createdAt: new Date(session.startedAt).toISOString(),
+      // T-026 R11: persist the retained artifact + changedFiles so the
+      // anchor pass survives a restart. R7: size-fit the artifact so the
+      // index stays under the read gate's MAX_FILE_BYTES cap.
+      artifact: session.artifact,
+      changedFiles: [...session.changedFiles],
       cachedResults: cached,
       lensMeta,
     };
-    writeIndex(index);
+    writeIndex(fitArtifactToIndexBudget(index));
   } catch (err) {
     logSwallow("writeIndex", err);
   }
@@ -521,6 +544,11 @@ function hydrateFromDisk(reviewId: string): ReviewSession | undefined {
     priorDeferrals: index.priorDeferrals,
     startedAt: Number.isFinite(startedAtMs) ? startedAtMs : Date.now(),
     status,
+    // T-026 R11: rehydrate the retained artifact + changedFiles (defaulted
+    // to ""/[] for pre-T-026 index files) so a restarted server can still
+    // anchor. A truncation-lost artifact rehydrates as "" -> normalize-only.
+    artifact: index.artifact,
+    changedFiles: index.changedFiles,
     cachedResults,
     promptHashes,
     prompts,

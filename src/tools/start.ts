@@ -21,6 +21,7 @@ import {
   PreambleConfigSchema,
   ProjectContextSchema,
 } from "../lenses/prompt-builder.js";
+import { sanitizeFindingForStorage } from "../merger/anchor.js";
 import { LensFindingSchema, type LensFinding } from "../schema/finding.js";
 import { type StartParams } from "../schema/index.js";
 import { sharedStartShape } from "../schema/params.js";
@@ -147,7 +148,16 @@ function tryCacheRead(
   try {
     const hit = readLensCache(lensId, promptHash);
     if (!hit) return undefined;
-    return { findings: hit.findings, notes: hit.notes };
+    // T-026 R-C4(b): the lens-cache READ choke point. Strip server-owned
+    // finding fields from cached findings so a value that round-tripped the
+    // cache (from a lens that supplied it before the ingestion strip, or a
+    // pre-upgrade file) never surfaces in round-2's `cached[]` wire array
+    // without passing the merger. Single canonical stripper (same helper as
+    // the ingestion + cache-write choke points).
+    return {
+      findings: hit.findings.map(sanitizeFindingForStorage),
+      notes: hit.notes,
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`lens_review_start: lens cache read failed: ${message}`);
@@ -241,6 +251,10 @@ function buildResponse(parsed: StartToolInput): StartToolOutput {
   for (const agent of spawnedAgents) {
     lensModels.set(agent.lensId, agent.model);
   }
+  // T-026 R11: retain the artifact + changedFiles so the complete-time
+  // anchor pass can verify snippets. changedFiles is [] for PLAN_REVIEW.
+  const retainedChangedFiles =
+    parsed.stage === "CODE_REVIEW" ? parsed.changedFiles : [];
   registerReview({
     reviewId,
     sessionId,
@@ -253,6 +267,8 @@ function buildResponse(parsed: StartToolInput): StartToolOutput {
     prompts,
     perLensExpiresAt,
     lensModels,
+    artifact: parsed.artifact,
+    changedFiles: retainedChangedFiles,
     // T-027 R14(h): persist each lens's timeout budget so the fetch
     // anchor and retry mint use the caller's configured value (not the
     // model default) even after a restart.

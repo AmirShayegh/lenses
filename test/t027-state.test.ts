@@ -644,6 +644,8 @@ describe("T-027 R14(h)/R-D7 timeout derivation and hydration fallback", () => {
       reviewRound: 1,
       priorDeferrals: [],
       createdAt: new Date().toISOString(),
+      artifact: "",
+      changedFiles: [],
       cachedResults: {},
       lensMeta: {
         security: {

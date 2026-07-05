@@ -23,13 +23,21 @@ import {
   type LensCoverageEntry,
   type LensErrorCode,
   type LensOutput,
+  type MergedFinding,
   type MergerConfig,
   type NextAction,
   type ParseError,
+  type ReviewIntegrityEntry,
   type ReviewVerdict,
 } from "../schema/index.js";
 
+import {
+  verifyAnchors,
+  type AnchoringInput,
+} from "./anchor.js";
 import { applyBlockingPolicy } from "./blocking-policy.js";
+
+export type { AnchoringInput } from "./anchor.js";
 import { dedupeFindings } from "./dedup.js";
 import { detectTensions } from "./tension.js";
 import { computeVerdict } from "./verdict.js";
@@ -79,6 +87,42 @@ export interface MergerInput {
    * envelopes can never carry `approve`.
    */
   readonly reviewComplete?: boolean;
+  /**
+   * T-026: complete-time anchoring context (stage + retained artifact +
+   * changedFiles), supplied by `complete.ts` from the ReviewSession. Absent
+   * (legacy callers / unit tests) -> the anchor pass runs normalize-only:
+   * it strips server-owned finding fields and passes everything else
+   * through, a provable no-op for any pre-T-026 input.
+   */
+  readonly anchoring?: AnchoringInput;
+}
+
+/**
+ * T-026 (pen resolution 5): the focused integrity assertion. Runs after all
+ * post-anchor pipeline stages and BEFORE the verdict schema parse in
+ * complete.ts. Verifies every reviewIntegrity key has exactly one carrier in
+ * `findings[]`; a violation names the offending key and the stage. This is a
+ * server-side invariant break (dedup R-D4d + R6 make it unreachable on honest
+ * input), surfaced loudly rather than shipped.
+ */
+function assertIntegrityCarriers(
+  findings: readonly MergedFinding[],
+  reviewIntegrity: readonly ReviewIntegrityEntry[],
+): void {
+  const counts = new Map<string, number>();
+  for (const f of findings) {
+    if (f.integrityKey !== undefined) {
+      counts.set(f.integrityKey, (counts.get(f.integrityKey) ?? 0) + 1);
+    }
+  }
+  for (const entry of reviewIntegrity) {
+    const n = counts.get(entry.integrityKey) ?? 0;
+    if (n !== 1) {
+      throw new Error(
+        `anchor integrity invariant [stage=verdict-assembly]: reviewIntegrity key '${entry.integrityKey}' must have exactly one findings[] carrier (found ${n})`,
+      );
+    }
+  }
 }
 
 /**
@@ -105,16 +149,39 @@ export function runMergerPipeline(input: MergerInput): ReviewVerdict {
   const lensCoverage: readonly LensCoverageEntry[] = input.lensCoverage ?? [];
   const reviewComplete = input.reviewComplete ?? true;
 
+  // hadAnyFindings ranges over the RAW per-lens outputs (before the anchor
+  // pass, dedup, confidence filter, and deferral) so the L-003
+  // disambiguation stays accurate: "did any lens produce a finding at parse
+  // time, regardless of what survived later filtering".
   let rawFindingCount = 0;
   for (const { output } of input.perLens) {
     if (output.status === "ok") rawFindingCount += output.findings.length;
   }
   const hadAnyFindings = rawFindingCount > 0;
 
-  const deduped = dedupeFindings(input.perLens);
-  const { kept, deferred } = applyBlockingPolicy(deduped, config);
+  // T-026: the anchor pass is the FIRST stage (PRE-dedup). It realigns
+  // drifted lines, routes unverifiable findings to survive+flag or
+  // evidence_unverified deferral, strips server-owned finding fields, and
+  // emits the verdict integrity surface. Normalize-only when `anchoring` is
+  // absent.
+  const anchor = verifyAnchors({
+    perLens: input.perLens,
+    ...(input.anchoring !== undefined ? { anchoring: input.anchoring } : {}),
+    alwaysBlock: config.blockingPolicy.alwaysBlock,
+    confidenceFloor: config.confidenceFloor,
+  });
+
+  const deduped = dedupeFindings(anchor.perLens);
+  const { kept, deferred: floorDeferred } = applyBlockingPolicy(deduped, config);
+  // evidence_unverified deferrals (never deduped) precede the confidence-floor
+  // deferrals in the disclosure; suppressedFindingCount mirrors the union.
+  const deferred = [...anchor.deferred, ...floorDeferred];
   const tensions = detectTensions(kept);
   const { verdict: baseVerdict, counts } = computeVerdict(kept);
+
+  // Pen resolution 5: assert 1:1 integrity-key carriers before the schema
+  // parse (which re-enforces the same tie via superRefine, R-D4f).
+  assertIntegrityCarriers(kept, anchor.integrityEntries);
 
   // T-027 R14(c): coverage + errorCodes derive mechanically from the
   // disclosure so they can never disagree with lensCoverage (the
@@ -161,5 +228,9 @@ export function runMergerPipeline(input: MergerInput): ReviewVerdict {
     coverage,
     errorCodes,
     reviewComplete,
+    anchorRealignedCount: anchor.realignedCount,
+    evidenceUnverifiedCount: anchor.evidenceUnverifiedCount,
+    reviewIntegrity: [...anchor.integrityEntries],
+    anchorUnindexedFiles: [...anchor.anchorUnindexedFiles],
   };
 }

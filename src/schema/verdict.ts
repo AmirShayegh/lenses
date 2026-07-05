@@ -12,6 +12,7 @@ import {
   DeferredFindingSchema,
   NextActionSchema,
   ParseErrorSchema,
+  ReviewIntegrityEntrySchema,
 } from "./review-protocol.js";
 
 /** Top-level verdict returned by `lens_review_complete`. */
@@ -118,6 +119,30 @@ export const COVERED_STATUSES: ReadonlySet<LensCoverageStatus> = new Set([
  *  - `errorCodes` -- carries PARTIAL_RESULTS iff any entry is expired.
  *  - `reviewComplete` -- false for interim envelopes (incremental
  *    submission); interim envelopes can never carry approve.
+ *
+ * T-026 evidence-anchoring integrity surface (all DEFAULTED so pre-T-026
+ * consumers parse unchanged). CODE_REVIEW-only in practice; PLAN_REVIEW and
+ * normalize-only runs leave them at the empty/zero defaults.
+ *
+ * TRUST BOUNDARY (R-D1a): these fields attest PROMPT-CONSISTENCY anchoring
+ * only -- the server verifies lens quotes against the SAME caller-supplied
+ * artifact string that was embedded in every lens prompt and bound by
+ * promptHash, so all lenses and the anchor pass provably saw one identical
+ * artifact. They NEVER attest that the artifact faithfully reflects any
+ * repository state; artifact authenticity remains the caller's
+ * responsibility (the server has zero repo access and calls no API).
+ *  - `anchorRealignedCount` -- PRE-dedup operational telemetry (R4a): the
+ *    number of input findings the server realigned this round. The
+ *    superRefine enforces only the sound direction (>= emitted carriers);
+ *    dedup loss makes strict inequality legal.
+ *  - `evidenceUnverifiedCount` -- exact count of `evidence_unverified`
+ *    deferrals (never deduped, so equality is sound).
+ *  - `reviewIntegrity` -- survived-and-flagged findings whose snippet
+ *    failed verification; each `integrityKey` maps 1:1 to a `findings[]`
+ *    member.
+ *  - `anchorUnindexedFiles` -- changedFiles entries with no diff new-side
+ *    index entry (R-D1b): a pure integrity disclosure, sorted + deduped.
+ *    NO verdict/severity/blocking behavior changes when it is non-empty.
  */
 export const ReviewVerdictSchema = z
   .object({
@@ -138,6 +163,10 @@ export const ReviewVerdictSchema = z
     coverage: z.enum(["full", "partial"]).default("full"),
     errorCodes: z.array(LensErrorCodeSchema).default([]),
     reviewComplete: z.boolean().default(true),
+    anchorRealignedCount: z.number().int().min(0).default(0),
+    evidenceUnverifiedCount: z.number().int().min(0).default(0),
+    reviewIntegrity: z.array(ReviewIntegrityEntrySchema).default([]),
+    anchorUnindexedFiles: z.array(z.string()).default([]),
   })
   .strict()
   .superRefine((val, ctx) => {
@@ -341,6 +370,65 @@ export const ReviewVerdictSchema = z
           code: z.ZodIssueCode.custom,
           path: ["coverage"],
           message: `coverage must be 'partial' while reviewComplete=false`,
+        });
+      }
+    }
+    // T-026 R4(a): anchorRealignedCount is PRE-dedup operational telemetry
+    // (server-minted). Enforce only the sound direction: it must be at
+    // least the number of EMITTED carriers of anchorRealignedFrom (across
+    // both kept findings and deferrals). Strict inequality is legal --
+    // dedup can drop a realigned finding that lost the confidence tiebreak.
+    const realignedCarriers =
+      val.findings.filter((f) => f.anchorRealignedFrom !== undefined).length +
+      val.deferred.filter((d) => d.finding.anchorRealignedFrom !== undefined)
+        .length;
+    if (val.anchorRealignedCount < realignedCarriers) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["anchorRealignedCount"],
+        message: `anchorRealignedCount (${val.anchorRealignedCount}) must be >= emitted findings/deferrals carrying anchorRealignedFrom (${realignedCarriers})`,
+      });
+    }
+    // T-026 R4(a) / ACCEPTANCE 4 (amended): evidenceUnverifiedCount is an
+    // EXACT mirror of the evidence_unverified deferrals -- those are never
+    // deduped, so equality is sound.
+    const evidenceUnverifiedDeferrals = val.deferred.filter(
+      (d) => d.reason === "evidence_unverified",
+    ).length;
+    if (val.evidenceUnverifiedCount !== evidenceUnverifiedDeferrals) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["evidenceUnverifiedCount"],
+        message: `evidenceUnverifiedCount (${val.evidenceUnverifiedCount}) must equal evidence_unverified deferrals (${evidenceUnverifiedDeferrals})`,
+      });
+    }
+    // T-026 R-D4(f): every reviewIntegrity entry's integrityKey matches
+    // EXACTLY ONE findings[] member, and no two findings[] members share an
+    // integrityKey. Sound because R6 guarantees an integrity-flagged
+    // finding's dedup representative is never floor-deferred, and dedup
+    // never collapses a finding carrying an integrityKey (R-D4d).
+    const keyCounts = new Map<string, number>();
+    for (const f of val.findings) {
+      if (f.integrityKey !== undefined) {
+        keyCounts.set(f.integrityKey, (keyCounts.get(f.integrityKey) ?? 0) + 1);
+      }
+    }
+    for (const [key, count] of keyCounts) {
+      if (count > 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["findings"],
+          message: `integrityKey '${key}' is shared by ${count} findings (must be unique)`,
+        });
+      }
+    }
+    for (const entry of val.reviewIntegrity) {
+      const carriers = keyCounts.get(entry.integrityKey) ?? 0;
+      if (carriers !== 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["reviewIntegrity"],
+          message: `reviewIntegrity key '${entry.integrityKey}' must match exactly one findings[] member (matched ${carriers})`,
         });
       }
     }

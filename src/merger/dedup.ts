@@ -46,6 +46,15 @@ export function dedupeFindings(
         ungrouped.push(toMerged(f, [lensId]));
         continue;
       }
+      // T-026 R-D4(d): a survived-and-flagged finding (carries integrityKey)
+      // MUST NOT collapse into another finding, nor another into it. Bypass
+      // bucketing entirely so its integrityKey correlates 1:1 to the kept
+      // representative (verdict.ts superRefine + the pipeline assertion rely
+      // on this). This pins the non-collapse of flagged findings as spec.
+      if (f.integrityKey !== undefined) {
+        ungrouped.push(toMerged(f, [lensId]));
+        continue;
+      }
       // `\x00` separator so ("a", 12, "b") and ("a1", 2, "b") do not alias.
       const key = `${f.file}\x00${f.line ?? ""}\x00${f.category}`;
       const existing = bucketedByKey.get(key);
@@ -84,6 +93,17 @@ function toMerged(
     category: base.category,
     file: base.file,
     line: base.line,
+    // T-026 (R13): the optional evidence + server-owned fields must survive
+    // `toMerged` so a realigned line, its origin, the snippet evidence, and
+    // the integrity correlation key reach the verdict. Only spread when
+    // present to keep `exactOptionalPropertyTypes` happy.
+    ...(base.snippet !== undefined ? { snippet: base.snippet } : {}),
+    ...(base.anchorRealignedFrom !== undefined
+      ? { anchorRealignedFrom: base.anchorRealignedFrom }
+      : {}),
+    ...(base.integrityKey !== undefined
+      ? { integrityKey: base.integrityKey }
+      : {}),
     description: base.description,
     suggestion: base.suggestion,
     confidence: base.confidence,

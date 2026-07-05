@@ -103,28 +103,43 @@ export function renderSharedPreamble(params: SharedPreambleParams): string {
   );
 
   // 3. Finding format
-  parts.push(
-    [
-      "## Finding format",
+  const findingFormatLines = [
+    "## Finding format",
+    "",
+    "Each finding in the `findings` array must have exactly these fields:",
+    "",
+    "```json",
+    "{",
+    '  "id": "stable per-finding identifier, non-empty string",',
+    `  "severity": "${severities}",`,
+    '  "category": "lens-specific category string, non-empty",',
+    '  "file": "path/to/file.ts",',
+    '  "line": 42,',
+    '  "snippet": { "quote": "the exact source line at line 42, verbatim", "startLine": 42 },',
+    '  "description": "what is wrong and why",',
+    '  "suggestion": "actionable recommendation",',
+    '  "confidence": 0.85',
+    "}",
+    "```",
+    "",
+    "`file` must be a non-empty string or JSON `null` (the literal `null`, NOT the string `\"null\"`). `line` must be a positive integer or JSON `null`. `line` may only be non-null when `file` is non-null. `confidence` must be in [0, 1].",
+    "",
+    // SCOPE 5a: pin the coordinate system for `line`.
+    "`line` is the 1-based line number in the post-change (new) version of `file`, as shown by Read; never use diff-hunk-relative or old-file numbering.",
+    "",
+    // SCOPE 5b + R3: the snippet mandate, stage-neutral.
+    "Quote the exact source line at `line` verbatim into `snippet.quote` and set `snippet.startLine` equal to `line`. If the source line exceeds 400 characters, quote exactly its first 400 characters. Omit `snippet` only when `line` is null.",
+  ];
+  // R-D2(a): CODE_REVIEW-only. The server can only verify quotes against the
+  // Diff new-side, so a defect outside the shown lines must be reported
+  // unlocalized. Absent from PLAN_REVIEW rendering.
+  if (params.stage === "CODE_REVIEW") {
+    findingFormatLines.push(
       "",
-      "Each finding in the `findings` array must have exactly these fields:",
-      "",
-      "```json",
-      "{",
-      '  "id": "stable per-finding identifier, non-empty string",',
-      `  "severity": "${severities}",`,
-      '  "category": "lens-specific category string, non-empty",',
-      '  "file": "path/to/file.ts",',
-      '  "line": 42,',
-      '  "description": "what is wrong and why",',
-      '  "suggestion": "actionable recommendation",',
-      '  "confidence": 0.85',
-      "}",
-      "```",
-      "",
-      "`file` must be a non-empty string or JSON `null` (the literal `null`, NOT the string `\"null\"`). `line` must be a positive integer or JSON `null`. `line` may only be non-null when `file` is non-null. `confidence` must be in [0, 1].",
-    ].join("\n"),
-  );
+      "For CODE_REVIEW, `line` and `snippet` may only reference post-change content shown in the Diff (added and context lines); if the defect sits in a changed file but outside the lines the Diff shows, set `line: null`, omit `snippet`, and name the exact location in `description` instead.",
+    );
+  }
+  parts.push(findingFormatLines.join("\n"));
 
   // 4. Identity
   const identityLines = [

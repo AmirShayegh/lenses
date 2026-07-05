@@ -14,9 +14,41 @@ export const LensStatusSchema = z.enum(["ok", "error", "skipped"]);
 export type LensStatus = z.infer<typeof LensStatusSchema>;
 
 /**
+ * T-026: quoted source evidence a lens attaches to a localized finding so
+ * the server can text-verify (and, on drift, realign) the claimed line
+ * against the retained artifact at complete-time, with zero repo access.
+ *
+ * The `quote` cap is 400 chars (R3): a source line longer than 400
+ * characters is quoted by its first 400 characters, and the anchor
+ * matcher recognizes the prefix form. Capping here keeps a pathological
+ * multi-KB line from failing LensFindingSchema `.strict()` (which would
+ * lose the ENTIRE lens payload to the error-placeholder path). `.strict()`
+ * so a lens cannot smuggle extra keys into the evidence object.
+ */
+export const SnippetSchema = z
+  .object({
+    quote: z.string().min(1).max(400),
+    startLine: z.number().int().positive(),
+  })
+  .strict();
+export type Snippet = z.infer<typeof SnippetSchema>;
+
+/**
  * Shared field shape for lens-reported findings and merger-produced merged
  * findings. Factored out so `LensFindingSchema` and `MergedFindingSchema` stay
  * in lockstep -- adding or renaming a field happens here exactly once.
+ *
+ * T-026 trust boundary: `snippet` is lens-supplied evidence, while
+ * `anchorRealignedFrom` and `integrityKey` are SERVER-OWNED (minted only by
+ * `verifyAnchors`). The single-shared-shape rule (both LensFinding and
+ * MergedFinding carry every field) is preserved deliberately: rather than
+ * splitting the input/internal schemas -- which would either route any lens
+ * that supplies a server field to the whole-payload error-placeholder path
+ * (LensFindingSchema is `.strict()`) or break this single-shape invariant --
+ * the server strips the server-owned fields from lens input via the single
+ * `sanitizeFindingForStorage` helper at every ingress (R-C2 / R-C4 / R-D4).
+ * All three T-026 fields are `.optional()` (R4): absent means, respectively,
+ * no snippet / not realigned / not integrity-flagged.
  */
 const findingObjectShape = {
   id: z.string().min(1),
@@ -24,6 +56,17 @@ const findingObjectShape = {
   category: z.string().min(1),
   file: z.string().min(1).nullable(),
   line: z.number().int().positive().nullable(),
+  // T-026: lens-supplied quoted source evidence for the claimed line.
+  snippet: SnippetSchema.optional(),
+  // T-026 SERVER-OWNED: the original claimed line when `verifyAnchors`
+  // realigned this finding. Stripped from lens input by
+  // sanitizeFindingForStorage; only the anchor pass sets it.
+  anchorRealignedFrom: z.number().int().positive().optional(),
+  // T-026 R-D4 SERVER-OWNED: correlates a survived-and-flagged finding to
+  // its ReviewIntegrityEntry 1:1. VERDICT-LOCAL -- meaningful only within a
+  // single completion round's verdict envelope, never stable across rounds
+  // or cache reads. Stripped from lens input by sanitizeFindingForStorage.
+  integrityKey: z.string().min(1).optional(),
   description: z.string(),
   suggestion: z.string(),
   confidence: z.number().min(0).max(1),

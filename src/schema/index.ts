@@ -5,12 +5,14 @@ export {
   LensStatusSchema,
   MergedFindingSchema,
   SeveritySchema,
+  SnippetSchema,
   type DeferralKey,
   type LensFinding,
   type LensOutput,
   type LensStatus,
   type MergedFinding,
   type Severity,
+  type Snippet,
 } from "./finding.js";
 
 export {
@@ -52,12 +54,14 @@ export {
   NextActionSchema,
   ParseErrorPhaseSchema,
   ParseErrorSchema,
+  ReviewIntegrityEntrySchema,
   ZodIssueWireSchema,
   type DeferralReason,
   type DeferredFinding,
   type NextAction,
   type ParseError,
   type ParseErrorPhase,
+  type ReviewIntegrityEntry,
   type ZodIssueWire,
 } from "./review-protocol.js";
 

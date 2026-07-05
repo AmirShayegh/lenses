@@ -38,6 +38,7 @@ export {
 } from "./lenses/prompt-builder.js";
 export {
   runMergerPipeline,
+  type AnchoringInput,
   type MergerInput,
   type LensRunResult,
 } from "./merger/pipeline.js";
