@@ -108,7 +108,11 @@ beforeEach(() => {
 });
 
 describe("T-027 R1 per-result disposition order", () => {
-  it("R1 mandated: in-window ok, deadline lapse, duplicate attempt-1 -> stale_attempt; lens stays ok and review finalizable", () => {
+  // Codex round (resolution 3): the ok-covered shield fires BEFORE the
+  // attempt-monotonicity rejections. A harmless late duplicate for an
+  // already-ok lens must never reject the batch, regardless of its
+  // attempt number.
+  it("codex round: a late STALE duplicate for an ok-covered lens is ignored; the same batch finalizes", () => {
     const t0 = Date.now();
     register({
       perLensExpiresAt: new Map<LensId, number>([["security", t0 + 1000]]),
@@ -121,35 +125,75 @@ describe("T-027 R1 per-result disposition order", () => {
     });
     expect(first.ok).toBe(true);
 
-    // Duplicate attempt-1 resubmission AFTER the deadline lapsed:
-    // stale_attempt wins over expiry diversion (whole-batch rejection).
-    const dup = applyCompletion({
-      reviewId: RID,
-      results: [ok("security", 1)],
-      finalize: false,
-      now: t0 + 2000,
-    });
-    expect(dup.ok).toBe(false);
-    if (dup.ok) throw new Error();
-    expect(dup.code).toBe("stale_attempt");
-
-    const s = getReview(RID);
-    if (!s) throw new Error();
-    expect(s.perLensExpired.has("security")).toBe(false);
-    const entry = buildLensCoverage(s).find((e) => e.lensId === "security");
-    expect(entry?.status).toBe("ok");
-
-    // Still finalizable with the ok output intact.
+    // Duplicate attempt-1 resubmission AFTER the deadline lapsed, in
+    // the SAME batch as the remaining fresh lenses: the duplicate is
+    // diverted to pastDeadlineIgnoredLensIds and the batch finalizes.
     const fin = applyCompletion({
       reviewId: RID,
-      results: [ok("clean-code"), ok("performance")],
+      results: [ok("security", 1), ok("clean-code"), ok("performance")],
       finalize: true,
       now: t0 + 2000,
     });
     expect(fin.ok).toBe(true);
     if (!fin.ok) throw new Error();
+    expect(fin.disposition.pastDeadlineIgnoredLensIds).toEqual(["security"]);
     expect(fin.session.status).toBe("complete");
+    expect(fin.session.perLensExpired.has("security")).toBe(false);
+    expect(fin.session.perLensAttempts.get("security")).toBe(1);
     expect(fin.session.perLensLatestOutput.get("security")?.status).toBe("ok");
+    const entry = buildLensCoverage(fin.session).find(
+      (e) => e.lensId === "security",
+    );
+    expect(entry?.status).toBe("ok");
+  });
+
+  it("codex round: a late NON-CONTIGUOUS duplicate for an ok-covered lens is also ignored, not rejected", () => {
+    const t0 = Date.now();
+    register({
+      perLensExpiresAt: new Map<LensId, number>([["security", t0 + 1000]]),
+    });
+    const first = applyCompletion({
+      reviewId: RID,
+      results: [ok("security")],
+      finalize: false,
+      now: t0 + 10,
+    });
+    expect(first.ok).toBe(true);
+
+    const late = applyCompletion({
+      reviewId: RID,
+      results: [ok("security", 7)],
+      finalize: false,
+      now: t0 + 2000,
+    });
+    expect(late.ok).toBe(true);
+    if (!late.ok) throw new Error();
+    expect(late.disposition.pastDeadlineIgnoredLensIds).toEqual(["security"]);
+    expect(late.session.perLensAttempts.get("security")).toBe(1);
+  });
+
+  it("an IN-WINDOW stale duplicate still rejects (the shield requires the deadline to have passed)", () => {
+    const t0 = Date.now();
+    register({
+      perLensExpiresAt: new Map<LensId, number>([["security", t0 + 1000]]),
+    });
+    const first = applyCompletion({
+      reviewId: RID,
+      results: [ok("security")],
+      finalize: false,
+      now: t0 + 10,
+    });
+    expect(first.ok).toBe(true);
+
+    const dup = applyCompletion({
+      reviewId: RID,
+      results: [ok("security", 1)],
+      finalize: false,
+      now: t0 + 500,
+    });
+    expect(dup.ok).toBe(false);
+    if (dup.ok) throw new Error();
+    expect(dup.code).toBe("stale_attempt");
   });
 
   it("R1 rule 4: a past-deadline result for an ok-covered lens is ignored and never flips coverage to expired", () => {
@@ -443,6 +487,54 @@ describe("T-027 R-D5 task record selection", () => {
       rec("security", 1, "completed", true),
     ]);
     expect(picked?.status).toBe("completed");
+  });
+});
+
+describe("codex round: comparator real-failure semantics (resolution 1)", () => {
+  // Writer inventory (audited): task records are written ONLY by
+  // (a) registration pending seeds, (b) persistInFlightBestEffort over
+  // ACCEPTED submissions, (c) persistExpiredBestEffort (ok-guarded),
+  // (d) the anchor's pending -> in_flight flip. No path can write a
+  // failed record that was not a genuinely accepted submission at a
+  // monotonically advanced attempt, so failed@N beating ok@N-1 is the
+  // intended latest-real-terminal-attempt-wins semantics (it mirrors
+  // perLensLatestOutput in memory exactly).
+  it("a REAL failed@2 supersedes ok@1 across a restart (disk mirrors memory)", () => {
+    const t0 = Date.now();
+    const ONE: readonly LensId[] = ["security"];
+    register({
+      expectedLensIds: ONE,
+      ...fullMaps(ONE, new Map<LensId, number>([["security", t0 + 600_000]])),
+    });
+    const first = applyCompletion({
+      reviewId: RID,
+      results: [ok("security")],
+      finalize: false,
+      now: t0 + 10,
+    });
+    expect(first.ok).toBe(true);
+    // A REAL attempt-2 failure (the lens itself reported an error).
+    const second = applyCompletion({
+      reviewId: RID,
+      results: [err("security", 2)],
+      finalize: false,
+      now: t0 + 20,
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw new Error();
+    expect(second.session.perLensLatestOutput.get("security")?.status).toBe(
+      "error",
+    );
+
+    _clearMapOnlyForTests();
+    const s = getReview(RID);
+    if (!s) throw new Error();
+    expect(s.perLensAttempts.get("security")).toBe(2);
+    expect(s.perLensLatestOutput.get("security")?.status).toBe("error");
+    expect(s.perLensExpired.has("security")).toBe(false);
+    expect(buildLensCoverage(s).find((e) => e.lensId === "security")?.status).toBe(
+      "error",
+    );
   });
 });
 

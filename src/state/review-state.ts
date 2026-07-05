@@ -541,16 +541,18 @@ export interface SubmittedResult {
  *  (1) a result for a lens already in perLensExpired is silently
  *      diverted: output dropped, attempts untouched, coverage stays
  *      "expired", no parse error (R4).
- *  (2) a result failing the acceptance test (attempt === highestSeen+1)
+ *  (2) ok-covered shield (codex round, resolution 3): a past-deadline
+ *      result for a lens already covered by an ok latest output is a
+ *      harmless late duplicate and is ignored REGARDLESS of attempt
+ *      number (not stored, attempts untouched, coverage stays "ok",
+ *      never expired). Fires BEFORE the monotonicity rejections so a
+ *      late duplicate can never reject the whole batch.
+ *  (3) a result failing the acceptance test (attempt === highestSeen+1)
  *      falls through to the stale_attempt / non_contiguous_attempt
- *      whole-batch rejection exactly as before T-027, and is NEVER
- *      diverted to expired (stale-over-expiry tiebreaker).
- *  (3) a would-be-accepted result past its lens deadline is diverted
+ *      whole-batch rejection exactly as before T-027 (an IN-WINDOW
+ *      duplicate still rejects), and is NEVER diverted to expired.
+ *  (4) a would-be-accepted result past its lens deadline is diverted
  *      to newly-expired (attempt = highestSeen + 1, output NOT stored).
- *  (4) a past-deadline result for a lens already covered by an ok
- *      latest output must NEVER transition that lens to expired,
- *      regardless of attempt number: it is ignored (not stored) and
- *      the lens's coverage stays "ok".
  *
  * A lens with NO registered deadline never expires and is never swept
  * (HEAD parity, pen resolution 9).
@@ -585,8 +587,21 @@ export function planCompletion(
       alreadyExpiredLensIds.push(r.lensId);
       continue;
     }
-    // (2) attempt monotonicity, exactly as at HEAD; fires BEFORE any
-    // expiry diversion.
+    // (2) ok-covered shield (codex round, resolution 3): a harmless
+    // past-deadline duplicate for an already-ok lens is ignored
+    // REGARDLESS of its attempt number, BEFORE the monotonicity
+    // rejections, so it can never reject the batch. An undefined
+    // deadline never expires (pen resolution 9, HEAD parity).
+    const deadline = session.perLensExpiresAt.get(r.lensId);
+    const hasOk =
+      session.perLensLatestOutput.get(r.lensId)?.status === "ok";
+    if (hasOk && deadline !== undefined && now > deadline) {
+      pastDeadlineIgnoredLensIds.push(r.lensId);
+      continue;
+    }
+    // (3) attempt monotonicity, exactly as at HEAD; an IN-WINDOW
+    // duplicate (or a late one for a lens NOT ok-covered) still
+    // rejects the whole batch and is never diverted to expired.
     const highestSeen = session.perLensAttempts.get(r.lensId) ?? 0;
     if (r.attempt <= highestSeen) {
       return {
@@ -608,18 +623,10 @@ export function planCompletion(
         submittedAttempt: r.attempt,
       };
     }
-    // (3)/(4) deadline handling. An undefined deadline never expires
-    // (pen resolution 9, HEAD parity).
-    const deadline = session.perLensExpiresAt.get(r.lensId);
+    // (4) a would-be-accepted result past its lens deadline diverts to
+    // newly-expired (the lens has no ok output, or the shield above
+    // would have caught it).
     if (deadline !== undefined && now > deadline) {
-      const hasOk =
-        session.perLensLatestOutput.get(r.lensId)?.status === "ok";
-      if (hasOk) {
-        // (4) ok-covered lens: ignore, coverage stays "ok".
-        pastDeadlineIgnoredLensIds.push(r.lensId);
-        continue;
-      }
-      // (3) divert to newly-expired.
       expired.add(r.lensId);
       newlyExpiredLensIds.push(r.lensId);
       nextAttempts.set(r.lensId, highestSeen + 1);
@@ -836,13 +843,13 @@ export function commitReviewCompletion(params: {
  * expired by the R9 sweep). Retry attempts never anchor here; the
  * retry deadline is minted exactly once in `mintRetryDeadline`.
  *
- * R5 failure order: the task-record flip is written FIRST; only if it
- * succeeds is index.lensMeta.expiresAt updated (hydration reads
- * deadlines exclusively from index.lensMeta, so a flipped record
- * without a deadline update is harmless: no durable extension
- * happened, and the flip still blocks re-anchoring). The in-memory
- * anchored set guards repeated calls within the process even when
- * disk reads misbehave.
+ * R5 failure order (codex round, resolution 4): DURABILITY FIRST. The
+ * index.lensMeta RMW (the value hydration reads) is written before
+ * anything else; if it fails, no anchor happens at all and the caller
+ * gets the pre-existing deadline, so the wire value always matches
+ * durable state. The pending -> in_flight once-marker flip runs second
+ * and is best-effort. The in-memory anchored set guards repeated calls
+ * within the process even when disk reads misbehave.
  */
 export function anchorLensDeadlineOnFetch(
   reviewId: string,
@@ -872,24 +879,7 @@ export function anchorLensDeadlineOnFetch(
   } catch {
     seed = undefined;
   }
-  if (seed === undefined) {
-    // No durable once-marker is possible (registration write lost or
-    // memory-only session). Anchor in memory only, guarded by the
-    // process-local set.
-    const timeoutOnly = session.perLensTimeoutMs.get(lensId);
-    if (timeoutOnly === undefined) return current;
-    const memDeadline = now + timeoutOnly;
-    anchoredLenses.add(key);
-    touchLru(reviewId, {
-      ...session,
-      perLensExpiresAt: new Map(session.perLensExpiresAt).set(
-        lensId,
-        memDeadline,
-      ),
-    });
-    return memDeadline;
-  }
-  if (seed.status !== "pending") {
+  if (seed !== undefined && seed.status !== "pending") {
     // Already flipped by a previous process/call: the flip blocks
     // re-anchoring even across restarts.
     anchoredLenses.add(key);
@@ -901,16 +891,21 @@ export function anchorLensDeadlineOnFetch(
     resolveLensTimeoutMs("sonnet", undefined);
   const newDeadline = now + timeoutMs;
 
-  // R5 order: flip the task record FIRST.
+  // Codex round (resolution 4): DURABILITY FIRST. The deadline handed
+  // to the caller must match durable state, so the index RMW runs
+  // before anything else. If it fails, NO anchor happens at all: no
+  // memory extension, no anchored-set mark, and the caller gets the
+  // pre-existing deadline (conservative, consistent with R-B2). A
+  // later fetch may retry the anchor once the disk is healthy. A
+  // MISSING index is the memory-only session path: the RMW is a silent
+  // no-op there and the memory anchor below is the only state that
+  // exists, so wire and "durable" state cannot disagree.
   try {
-    writeTask({
-      ...seed,
-      status: "in_flight",
+    updateIndexLensMeta(reviewId, lensId, {
       expiresAt: new Date(newDeadline).toISOString(),
     });
   } catch (err) {
-    logSwallow(`anchor flip(${lensId})`, err);
-    // Flip failed: no anchor happened; a later fetch may retry.
+    logSwallow(`anchor index RMW(${lensId})`, err);
     return current;
   }
   anchoredLenses.add(key);
@@ -921,15 +916,23 @@ export function anchorLensDeadlineOnFetch(
       newDeadline,
     ),
   });
-  try {
-    updateIndexLensMeta(reviewId, lensId, {
-      expiresAt: new Date(newDeadline).toISOString(),
-    });
-  } catch (err) {
-    // Harmless per R5: no durable extension happened; memory carries
-    // the anchored value for this process, and the flip blocks
-    // re-anchoring.
-    logSwallow(`anchor index RMW(${lensId})`, err);
+  // Once-marker second: flip the attempt-1 record pending -> in_flight.
+  // A failure here is logged and tolerated: the durable deadline is
+  // already extended, so wire and durable state agree; the residual
+  // risk is a post-restart re-anchor in this corner (no once-marker
+  // landed), never a wire/durable mismatch. `seed` is undefined only
+  // when the registration write was lost or the session is memory-only;
+  // there is no record to flip then.
+  if (seed !== undefined) {
+    try {
+      writeTask({
+        ...seed,
+        status: "in_flight",
+        expiresAt: new Date(newDeadline).toISOString(),
+      });
+    } catch (err) {
+      logSwallow(`anchor flip(${lensId})`, err);
+    }
   }
   return newDeadline;
 }

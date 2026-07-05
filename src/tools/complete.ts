@@ -488,15 +488,25 @@ export async function handleLensReviewComplete(
 
       // T-027 R4: expired lenses produce NO retry instructions and NO
       // parseErrors entries -- their disclosure is the expired coverage
-      // status. R-B3: ignored (unactivated) lenses produce no retries
-      // either. The committed disposition is the only source consulted
-      // (pen resolution 3).
+      // status. R-B3 (codex round, resolution 5): BOTH lists are
+      // additionally filtered to the review's expected lens set, so a
+      // submission for a lens that was never part of the review (valid
+      // id or invented, well-formed or malformed) cannot downgrade the
+      // verdict, emit a retry, surface a parse error, or touch
+      // coverage. The committed disposition + the session are the only
+      // sources consulted (pen resolution 3).
+      const expected = new Set<string>(session.expectedLensIds);
       const ignored = new Set<LensId>(disposition.ignoredLensIds);
       const effectiveCandidates = retryCandidates.filter(
-        (c) => !session.perLensExpired.has(c.lensId) && !ignored.has(c.lensId),
+        (c) =>
+          expected.has(c.lensId) &&
+          !session.perLensExpired.has(c.lensId) &&
+          !ignored.has(c.lensId),
       );
       const effectiveParseErrors = parseErrors.filter(
-        (p) => !session.perLensExpired.has(p.lensId as LensId),
+        (p) =>
+          expected.has(p.lensId) &&
+          !session.perLensExpired.has(p.lensId as LensId),
       );
 
       // Mints fresh per-attempt deadlines (R8); mutates the in-memory

@@ -374,7 +374,11 @@ describe("T-027 pen resolution 2: throw between apply and commit", () => {
 });
 
 describe("T-027 R1 at the tool boundary", () => {
-  it("in-window ok submission survives a post-deadline duplicate: stale_attempt error, lens stays ok, findings intact", async () => {
+  // Codex round (resolution 3): the post-deadline duplicate for an
+  // ok-covered lens is now IGNORED gracefully (no stale_attempt batch
+  // rejection); the lens stays ok and the review still finalizes with
+  // its findings intact.
+  it("in-window ok submission survives a post-deadline duplicate: duplicate ignored, lens stays ok, findings intact", async () => {
     const { reviewId } = await startReview({
       lenses: ["security", "clean-code"],
       lensTimeout: { default: 600_000, opus: 400 },
@@ -397,8 +401,12 @@ describe("T-027 R1 at the tool boundary", () => {
       reviewId,
       results: [{ lensId: "security", output: ok([secFinding]), attempt: 1 }],
     });
-    expect(dup.isError).toBe(true);
-    expect(dup.text).toContain("stale attempt");
+    expect(dup.isError).toBe(false);
+    const dupVerdict = ReviewVerdictSchema.parse(dup.body);
+    expect(dupVerdict.reviewComplete).toBe(false); // clean-code still open
+    expect(
+      dupVerdict.lensCoverage.find((e) => e.lensId === "security")?.status,
+    ).toBe("ok");
 
     const fin = await callComplete({
       reviewId,
@@ -413,5 +421,36 @@ describe("T-027 R1 at the tool boundary", () => {
     expect(verdict.coverage).toBe("full");
     expect(verdict.findings.map((f) => f.id)).toEqual(["sec-1"]);
     expect(verdict.errorCodes).toEqual([]);
+  });
+});
+
+describe("codex round R-B3: malformed output for an UNEXPECTED lens id", () => {
+  it("has zero influence: verdict, retries, parse errors, and coverage are as if it were never submitted", async () => {
+    const { reviewId, agents } = await startReview({
+      lenses: ["security", "clean-code"],
+    });
+    const { isError, body } = await callComplete({
+      reviewId,
+      results: [
+        ...agents.map((x) => ({ lensId: x.id, output: ok() })),
+        // Valid lens id, NOT activated, and MALFORMED payload: it must
+        // not downgrade the verdict, emit a retry, surface a parse
+        // error, or touch coverage.
+        { lensId: "performance", output: { status: "ok" /* malformed */ } },
+      ],
+    });
+    expect(isError).toBe(false);
+    const verdict = ReviewVerdictSchema.parse(body);
+    expect(verdict.verdict).toBe("approve");
+    expect(verdict.reviewComplete).toBe(true);
+    expect(verdict.coverage).toBe("full");
+    expect(verdict.parseErrors).toEqual([]);
+    expect(verdict.nextActions).toEqual([]);
+    expect(verdict.findings).toEqual([]);
+    expect(verdict.hadAnyFindings).toBe(false);
+    expect(verdict.lensCoverage).toHaveLength(2);
+    expect(
+      verdict.lensCoverage.find((e) => e.lensId === "performance"),
+    ).toBeUndefined();
   });
 });

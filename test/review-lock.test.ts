@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -93,6 +100,39 @@ describe("withReviewStateLock", () => {
     } finally {
       delete process.env.LENSES_LOCK_DEADLINE_MS;
       rmSync(path, { recursive: true, force: true });
+    }
+  });
+
+  // Codex round (resolution 2): only EEXIST means "held". Any other
+  // mkdir failure (EACCES on a read-only lock dir here) must take the
+  // run-unlocked-with-warning posture immediately, never spin or hang.
+  it("a non-EEXIST mkdir failure (EACCES) runs the callback unlocked with a warning instead of hanging", () => {
+    const roDir = mkdtempSync(join(tmpdir(), "lenses-lock-ro-"));
+    const prior = process.env.LENSES_LOCK_DIR;
+    const warnings: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    try {
+      chmodSync(roDir, 0o500); // lock dir exists but is not writable
+      process.env.LENSES_LOCK_DIR = roDir;
+      // Hang guard: if the fix regresses into a retry loop, fail fast
+      // via the deadline instead of tripping the vitest timeout.
+      process.env.LENSES_LOCK_DEADLINE_MS = "500";
+      const result = withReviewStateLock("lock-test-eacces", () => 42);
+      expect(result).toBe(42);
+      expect(warnings.some((w) => /running unlocked/.test(w))).toBe(true);
+    } finally {
+      console.error = origError;
+      delete process.env.LENSES_LOCK_DEADLINE_MS;
+      if (prior === undefined) {
+        delete process.env.LENSES_LOCK_DIR;
+      } else {
+        process.env.LENSES_LOCK_DIR = prior;
+      }
+      chmodSync(roDir, 0o700);
+      rmSync(roDir, { recursive: true, force: true });
     }
   });
 

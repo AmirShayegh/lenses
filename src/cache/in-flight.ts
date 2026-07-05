@@ -458,6 +458,22 @@ const STATUS_RANK: Record<TaskRecord["status"], number> = {
  * the documented total order live here; rule 1 (expired never erases a
  * prior terminal ok) is a pre-filter in `selectTaskRecord` because it
  * ranges over the whole record SET, not a pair.
+ *
+ * REAL-FAILURE SEMANTICS (codex round, resolution 1, audited): a
+ * `failed` record beating an ok record at a lower attempt is
+ * INTENTIONAL, because every `failed` record on disk corresponds to a
+ * genuinely ACCEPTED submission at a monotonically advanced attempt --
+ * it mirrors `perLensLatestOutput` in memory exactly. Writer inventory
+ * guaranteeing this: (a) registration writes `pending` seeds only;
+ * (b) `persistInFlightBestEffort` runs over the disposition's ACCEPTED
+ * submissions only (the T-027 round removed the post-handler call that
+ * could persist diverted/ignored placeholders); (c)
+ * `persistExpiredBestEffort` writes `expired` records only, guarded
+ * against ok-covered lenses; (d) the prompt-fetch anchor flips
+ * `pending` to `in_flight` only. No path can synthesize a `failed`
+ * record that bypassed the state machine. If a future writer breaks
+ * that inventory, extend the rule-1 pre-filter rather than this
+ * comparator.
  */
 export function compareTaskRecords(a: TaskRecord, b: TaskRecord): number {
   // Rule 3: non-terminal records are used only when the lens has no

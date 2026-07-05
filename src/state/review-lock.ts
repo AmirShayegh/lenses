@@ -98,8 +98,21 @@ export function withReviewStateLock<T>(reviewId: string, fn: () => T): T {
     try {
       mkdirSync(path); // non-recursive: throws EEXIST while held
       break; // acquired
-    } catch {
-      // Held (or unreadable). Steal only when demonstrably stale.
+    } catch (err) {
+      // Codex round (resolution 2): only EEXIST means "held by another
+      // caller". Any other failure (EACCES, ENOTDIR, EROFS, ...) is a
+      // broken lock store, not contention: retrying can never succeed,
+      // so take the documented run-unlocked-with-warning posture
+      // immediately instead of spinning toward a bogus timeout.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `review-lock: lock unavailable (${code ?? "unknown"}), running unlocked: ${message}`,
+        );
+        return fn();
+      }
+      // Held. Steal only when demonstrably stale.
       try {
         const st = statSync(path);
         if (Date.now() - st.mtimeMs > staleMs) {
@@ -107,7 +120,14 @@ export function withReviewStateLock<T>(reviewId: string, fn: () => T): T {
           continue; // retry immediately after stealing
         }
       } catch {
-        // Lock vanished between mkdir and stat: retry immediately.
+        // Lock vanished between mkdir and stat (or stat itself failed).
+        // Retry, but NEVER on a path that skips the deadline check: a
+        // persistently failing stat must still terminate.
+        if (Date.now() - startedAt >= deadlineMs) {
+          throw new Error(
+            `review-lock: lock timeout after ${deadlineMs}ms for review ${reviewId}`,
+          );
+        }
         continue;
       }
       if (Date.now() - startedAt >= deadlineMs) {

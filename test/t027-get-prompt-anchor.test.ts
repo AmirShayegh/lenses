@@ -6,7 +6,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { _failNextIndexRmwForTests } from "../src/cache/in-flight.js";
 import { ReviewVerdictSchema } from "../src/schema/index.js";
-import { _resetForTests } from "../src/state/review-state.js";
+import {
+  getReview,
+  _clearMapOnlyForTests,
+  _resetForTests,
+} from "../src/state/review-state.js";
 import { handleLensReviewComplete } from "../src/tools/complete.js";
 import {
   GetPromptOutputSchema,
@@ -102,14 +106,35 @@ describe("T-027 prompt-fetch anchoring", () => {
     expect(gp2.expiresAt).toBe(gp1.expiresAt);
   });
 
-  it("R5: when the index update fails partway, a second fetch does not extend the deadline again", async () => {
-    const { reviewId } = await startSecurity();
+  // Codex round (resolution 4): durability first. When the index RMW
+  // fails, NO anchor happens: the fetch returns the pre-existing
+  // deadline, durable state agrees after a restart, and a later fetch
+  // (healthy disk) may anchor durably, exactly once.
+  it("R5: an index RMW failure means no anchor: the fetch returns the OLD deadline and durable state agrees", async () => {
+    const { reviewId, hop1ExpiresAt } = await startSecurity();
     _failNextIndexRmwForTests({ reviewId });
     const gp1 = await getPrompt(reviewId);
-    expect(gp1.expiresAt).toBeDefined();
-    await sleep(10);
+    expect(gp1.expiresAt).toBe(hop1ExpiresAt);
+
+    // Simulated restart: hydration reads index.lensMeta and agrees
+    // with the wire value (no memory-only extension survived).
+    _clearMapOnlyForTests();
+    const hydrated = getReview(reviewId);
+    expect(hydrated?.perLensExpiresAt.get("security")).toBe(
+      Date.parse(hop1ExpiresAt),
+    );
+
+    // The anchor was NOT consumed by the failed attempt: the next
+    // fetch (disk healthy again) anchors durably, once.
+    await sleep(5);
     const gp2 = await getPrompt(reviewId);
-    expect(gp2.expiresAt).toBe(gp1.expiresAt);
+    expect(gp2.expiresAt).toBeDefined();
+    expect(Date.parse(gp2.expiresAt!)).toBeGreaterThanOrEqual(
+      Date.parse(hop1ExpiresAt),
+    );
+    await sleep(5);
+    const gp3 = await getPrompt(reviewId);
+    expect(gp3.expiresAt).toBe(gp2.expiresAt);
   });
 
   it("R8: a fetch after the deadline returns the prompt but leaves the old deadline intact", async () => {
