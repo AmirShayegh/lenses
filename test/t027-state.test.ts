@@ -208,7 +208,7 @@ describe("T-027 R1 per-result disposition order", () => {
       file: null,
       line: null,
       description: "late arrival",
-      suggestion: "",
+      suggestion: "s",
       confidence: 0.9,
     };
     const first = applyCompletion({
@@ -681,7 +681,7 @@ describe("T-027 R-B3/R-D2 unexpected-lens drop in planCompletion", () => {
       file: null,
       line: null,
       description: "intruder",
-      suggestion: "",
+      suggestion: "s",
       confidence: 0.9,
     };
     const plan = planCompletion(

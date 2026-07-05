@@ -56,6 +56,17 @@ describe("renderSharedPreamble", () => {
     expect(out).toContain("Review round: 1");
   });
 
+  it("T-028 SCOPE 4: requires description to name a concrete failure scenario", () => {
+    for (const params of [planParams(), codeParams()]) {
+      const out = renderSharedPreamble(params);
+      expect(out).toContain("`description` must name a concrete failure scenario");
+      // R13: the description sentence introduces no confidence-floor language.
+      const idx = out.indexOf("`description` must name a concrete failure scenario");
+      const sentence = out.slice(idx, idx + 220);
+      expect(sentence).not.toMatch(/confidence/i);
+    }
+  });
+
   it("renders CODE_REVIEW with changedFiles inside an untrusted-context block", () => {
     const out = renderSharedPreamble(
       codeParams({ changedFiles: ["src/a.ts", "src/b.ts"] }),

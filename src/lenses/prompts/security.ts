@@ -135,6 +135,7 @@ function renderCodeReview(opts: SecurityLensOpts): string {
       "- Dependencies flagged only by scanners where the vulnerable API is not used in this diff.",
       "- Security hardening orthogonal to the current change.",
       "- Secrets in test fixtures that are clearly fake/placeholder values.",
+      "- The general mechanics of a TOCTOU race (Concurrency lens owns that); flag a check-to-use race only when it is exploitable as an auth or security-check bypass here.",
     ].join("\n"),
   );
 

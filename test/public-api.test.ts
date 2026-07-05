@@ -32,18 +32,27 @@ import {
   // merger-config.ts
   BlockingPolicySchema,
   DEFAULT_ALWAYS_BLOCK,
+  DEFAULT_ALWAYSBLOCK_QUORUM,
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_MERGER_CONFIG,
   MergerConfigSchema,
   type BlockingPolicy,
   type MergerConfig,
-  // review-protocol.ts (T-022)
+  // review-protocol.ts (T-022 + T-028)
+  ClampEventSchema,
+  ClampStageSchema,
   DeferralReasonSchema,
   DeferredFindingSchema,
+  DROP_DEFERRAL_REASONS,
+  isDropDeferral,
   NextActionSchema,
   ParseErrorPhaseSchema,
   ParseErrorSchema,
+  RETAINED_DEFERRAL_REASONS,
+  toNextRoundDeferralKeys,
   ZodIssueWireSchema,
+  type ClampEvent,
+  type ClampStage,
   type DeferralReason,
   type DeferredFinding,
   type NextAction,
@@ -140,6 +149,9 @@ type _TypeOnlyBindings = [
   GetPromptParams,
   // T-024 error taxonomy
   LensErrorCode,
+  // T-028 review protocol
+  ClampEvent,
+  ClampStage,
   // T-033 stable library surface
   PublicLensDefinition,
   SurfaceRule,
@@ -258,6 +270,30 @@ describe("public API re-exports (src/index.ts)", () => {
       GetPromptParamsSchema.safeParse({ reviewId: "r", lensId: "security" })
         .success,
     ).toBe(true);
+  });
+
+  it("T-028 exposes exactly the ruled new exports (R7 / R-C2 / R-D2 fence)", () => {
+    // R2: quorum default.
+    expect(DEFAULT_ALWAYSBLOCK_QUORUM).toBe(2);
+    // R3 / R-C2: deferral taxonomy helpers.
+    expect(DROP_DEFERRAL_REASONS).toContain("below_confidence_floor");
+    expect(RETAINED_DEFERRAL_REASONS).toContain("severity_clamped_to_lens_max");
+    expect(RETAINED_DEFERRAL_REASONS).toContain(
+      "severity_escalated_by_corroboration",
+    );
+    expect(isDropDeferral("below_confidence_floor")).toBe(true);
+    expect(isDropDeferral("severity_clamped_to_lens_max")).toBe(false);
+    expect(typeof toNextRoundDeferralKeys).toBe("function");
+    // R-D2: clamp event schemas.
+    expect(ClampStageSchema.safeParse("lens_clamp").success).toBe(true);
+    expect(ClampStageSchema.safeParse("authority_ceiling").success).toBe(true);
+    const clamp: ClampEvent = {
+      lensId: "accessibility",
+      originalSeverity: "blocking",
+      clampedSeverity: "major",
+      stage: "lens_clamp" satisfies ClampStage,
+    };
+    expect(ClampEventSchema.safeParse(clamp).success).toBe(true);
   });
 
   it("T-024 LensErrorCode is exhaustively mapped to non-empty messages", () => {

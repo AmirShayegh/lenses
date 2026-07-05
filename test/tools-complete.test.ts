@@ -77,8 +77,8 @@ function finding(
     category: overrides.category ?? "generic",
     file: overrides.file ?? null,
     line: overrides.line ?? null,
-    description: overrides.description ?? "",
-    suggestion: overrides.suggestion ?? "",
+    description: overrides.description ?? "d",
+    suggestion: overrides.suggestion ?? "s",
     confidence: overrides.confidence ?? 0.8,
     ...overrides,
     severity,
@@ -777,11 +777,12 @@ describe("handleLensReviewComplete -- cross-lens dedup (T-010)", () => {
     expect(verdict.findings).toHaveLength(1);
     const merged = verdict.findings[0]!;
     expect(merged.contributingLenses).toEqual([first, second]);
-    // second won on confidence → surviving severity is minor.
-    expect(merged.severity).toBe("minor");
-    expect(verdict.verdict).toBe("approve");
-    expect(verdict.minor).toBe(1);
-    expect(verdict.major).toBe(0);
+    // T-028 severity-max (R10): second wins id/text on confidence, but the
+    // surviving severity is max(major, minor) = major -> verdict revise.
+    expect(merged.severity).toBe("major");
+    expect(verdict.verdict).toBe("revise");
+    expect(verdict.minor).toBe(0);
+    expect(verdict.major).toBe(1);
   });
 });
 

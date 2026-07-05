@@ -13,8 +13,8 @@ function mf(
     category: overrides.category ?? "generic",
     file: overrides.file === undefined ? "src/x.ts" : overrides.file,
     line: overrides.line === undefined ? 1 : overrides.line,
-    description: overrides.description ?? "",
-    suggestion: overrides.suggestion ?? "",
+    description: overrides.description ?? "d",
+    suggestion: overrides.suggestion ?? "s",
     confidence: overrides.confidence ?? 0.8,
     contributingLenses: overrides.contributingLenses ?? ["clean-code"],
   };

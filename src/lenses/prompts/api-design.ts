@@ -43,6 +43,7 @@ function renderCodeReview(): string {
       "",
       "- Internal-only API conventions documented in project rules.",
       "- Whether rate limiting is needed at all (Security lens owns that); flag only the response-contract shape here.",
+      "- The measured performance cost of unbounded fetching (Performance lens owns that); flag only the pagination response-contract shape here -- missing cursor/offset parameters or pagination headers.",
       "- GraphQL-specific patterns -- out of scope for this lens.",
       "- API style preferences that don't affect consumers.",
     ].join("\n"),

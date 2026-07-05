@@ -27,8 +27,8 @@ function finding(overrides: Partial<LensFinding> = {}): LensFinding {
     category: overrides.category ?? "generic",
     file: overrides.file ?? "src/x.ts",
     line: overrides.line ?? 1,
-    description: overrides.description ?? "",
-    suggestion: overrides.suggestion ?? "",
+    description: overrides.description ?? "d",
+    suggestion: overrides.suggestion ?? "s",
     confidence: overrides.confidence ?? 0.8,
     ...overrides,
   };

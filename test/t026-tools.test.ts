@@ -111,8 +111,8 @@ function fnd(overrides: Partial<LensFinding>): LensFinding {
     category: overrides.category ?? "generic",
     file: overrides.file ?? "src/x.ts",
     line: overrides.line ?? 1,
-    description: "",
-    suggestion: "",
+    description: "d",
+    suggestion: "s",
     confidence: overrides.confidence ?? 0.8,
     ...overrides,
   };

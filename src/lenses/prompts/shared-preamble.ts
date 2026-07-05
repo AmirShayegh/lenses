@@ -129,6 +129,12 @@ export function renderSharedPreamble(params: SharedPreambleParams): string {
     "",
     // SCOPE 5b + R3: the snippet mandate, stage-neutral.
     "Quote the exact source line at `line` verbatim into `snippet.quote` and set `snippet.startLine` equal to `line`. If the source line exceeds 400 characters, quote exactly its first 400 characters. Omit `snippet` only when `line` is null.",
+    "",
+    // T-028 SCOPE 4: description must be a concrete failure scenario (mirrors
+    // the Security lens's traced-data-flow requirement). Non-empty is enforced
+    // by the schema; this pins the CONTENT bar. No confidence-floor language
+    // (R13: the floor lives only in output rule 7 above).
+    "`description` must name a concrete failure scenario: the specific input, state, or call sequence that triggers the defect and the resulting harm. Do not merely restate the category or say a construct is \"risky\" without the triggering path.",
   ];
   // R-D2(a): CODE_REVIEW-only. The server can only verify quotes against the
   // Diff new-side, so a defect outside the shown lines must be reported

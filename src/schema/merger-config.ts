@@ -25,12 +25,26 @@ export const DEFAULT_ALWAYS_BLOCK: readonly string[] = [
   "hardcoded-secrets",
 ] as const;
 
+/**
+ * T-028 R2 / R-D1: minimum number of lenses that must corroborate the SAME
+ * exact `(file, line, category)` before a below-confidence-floor alwaysBlock
+ * finding is promoted to `blocking`. Below quorum the finding surfaces as
+ * `major` plus an `alwaysblock_below_quorum` deferred entry -- never a silent
+ * reject and never a silent drop.
+ */
+export const DEFAULT_ALWAYSBLOCK_QUORUM = 2;
+
 export const BlockingPolicySchema = z
   .object({
     alwaysBlock: z
       .array(z.string().min(1))
       .default(() => [...DEFAULT_ALWAYS_BLOCK]),
     neverBlock: z.array(z.string().min(1)).default(() => []),
+    alwaysBlockQuorum: z
+      .number()
+      .int()
+      .min(1)
+      .default(DEFAULT_ALWAYSBLOCK_QUORUM),
   })
   .strict();
 export type BlockingPolicy = z.infer<typeof BlockingPolicySchema>;
@@ -61,6 +75,7 @@ export const MergerConfigSchema = z
     blockingPolicy: BlockingPolicySchema.optional().default(() => ({
       alwaysBlock: [...DEFAULT_ALWAYS_BLOCK],
       neverBlock: [],
+      alwaysBlockQuorum: DEFAULT_ALWAYSBLOCK_QUORUM,
     })),
     maxAttempts: z.number().int().min(1).default(DEFAULT_MAX_ATTEMPTS),
   })
@@ -86,6 +101,7 @@ export const DEFAULT_MERGER_CONFIG: MergerConfig = (() => {
     blockingPolicy: Object.freeze({
       alwaysBlock: Object.freeze([...parsed.blockingPolicy.alwaysBlock]),
       neverBlock: Object.freeze([...parsed.blockingPolicy.neverBlock]),
+      alwaysBlockQuorum: parsed.blockingPolicy.alwaysBlockQuorum,
     }),
     maxAttempts: parsed.maxAttempts,
   }) as MergerConfig;

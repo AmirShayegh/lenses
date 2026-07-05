@@ -175,6 +175,40 @@ describe.each(LENSES)("$id lens body", (lens) => {
   });
 });
 
+describe("T-028 overlap demarcation bullets (SCOPE 6)", () => {
+  it("pagination lane: api-design owns the contract shape; performance owns the cost", () => {
+    const api = renderApiDesignBody("CODE_REVIEW");
+    const perf = renderPerformanceBody("CODE_REVIEW");
+    expect(api).toContain("Performance lens owns that");
+    expect(api).toContain("pagination response-contract shape");
+    expect(perf).toContain("API-design lens owns that");
+    expect(perf).toContain("cost of unbounded fetching");
+  });
+
+  it("TOCTOU lane: concurrency owns the mechanics; security owns the auth-bypass framing", () => {
+    const conc = renderConcurrencyBody("CODE_REVIEW");
+    const sec = renderSecurityBody("CODE_REVIEW");
+    expect(conc).toContain("Security lens owns that framing");
+    expect(sec).toContain("Concurrency lens owns that");
+    expect(sec).toContain("auth or security-check bypass");
+  });
+
+  it("demarcation bullets introduce no confidence-floor language (R13)", () => {
+    for (const render of [
+      renderApiDesignBody,
+      renderPerformanceBody,
+      renderConcurrencyBody,
+      renderSecurityBody,
+    ]) {
+      for (const stage of STAGES) {
+        const out = render(stage);
+        // The floor lives only in the shared preamble (T-030 centralization).
+        expect(out).not.toMatch(/confidence floor/i);
+      }
+    }
+  });
+});
+
 describe("cross-lens structural invariants", () => {
   it("v1 deny-list: no lens body (any stage) contains banned v1 strings", () => {
     for (const lens of LENSES) {

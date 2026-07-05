@@ -20,6 +20,9 @@ import type { LensId } from "../lenses/prompts/index.js";
 import {
   COVERED_STATUSES,
   DEFAULT_MERGER_CONFIG,
+  isDropDeferral,
+  type ClampEvent,
+  type DeferredFinding,
   type LensCoverageEntry,
   type LensErrorCode,
   type LensOutput,
@@ -36,11 +39,76 @@ import {
   type AnchoringInput,
 } from "./anchor.js";
 import { applyBlockingPolicy } from "./blocking-policy.js";
+import {
+  clampLensFindings,
+  enforceAuthorityCeiling,
+  registryCeilingFor,
+  type CeilingResolver,
+  type PassBResult,
+} from "./clamp.js";
 
 export type { AnchoringInput } from "./anchor.js";
 import { dedupeFindings } from "./dedup.js";
 import { detectTensions } from "./tension.js";
 import { computeVerdict } from "./verdict.js";
+
+/**
+ * T-028 R-D2 event order inside a coalesced `severity_clamped_to_lens_max`
+ * entry: `lens_clamp` events first (lensId asc), then the `authority_ceiling`
+ * event.
+ */
+function sortClampEvents(clamps: readonly ClampEvent[]): ClampEvent[] {
+  const lens = clamps
+    .filter((c) => c.stage === "lens_clamp")
+    .sort((a, b) => (a.lensId < b.lensId ? -1 : a.lensId > b.lensId ? 1 : 0));
+  const auth = clamps.filter((c) => c.stage === "authority_ceiling");
+  return [...lens, ...auth];
+}
+
+/**
+ * T-028 R3 / R-C1 / R-D2 / pen resolution 1-3: materialize the RETAINED audit
+ * entries in the pipeline's FINAL post-Pass-B stage, so every entry's `finding`
+ * snapshot is the final `findings[]` member BY REFERENCE (R-D3 membership holds
+ * by construction; no snapshot rebasing). At most ONE entry per reason per
+ * final finding (R-C1 coalescing): a finding may carry an
+ * `alwaysblock_below_quorum` AND a `severity_clamped_to_lens_max` AND a
+ * `severity_escalated_by_corroboration` entry, all referencing itself.
+ */
+function buildRetainedAudits(passB: PassBResult): DeferredFinding[] {
+  const out: DeferredFinding[] = [];
+  for (const f of passB.kept) {
+    if (passB.alwaysBlockBelowQuorum.has(f)) {
+      out.push({ finding: f, reason: "alwaysblock_below_quorum" });
+    }
+    const clamps = passB.clampLineage.get(f);
+    if (clamps !== undefined && clamps.length > 0) {
+      out.push({
+        finding: f,
+        reason: "severity_clamped_to_lens_max",
+        clamps: sortClampEvents(clamps),
+      });
+    }
+    const escalations = passB.escalationLineage.get(f);
+    if (escalations !== undefined && escalations.length > 0) {
+      out.push({
+        finding: f,
+        reason: "severity_escalated_by_corroboration",
+        escalations: [...escalations].sort((a, b) =>
+          a.lensId !== b.lensId
+            ? a.lensId < b.lensId
+              ? -1
+              : 1
+            : a.findingId < b.findingId
+              ? -1
+              : a.findingId > b.findingId
+                ? 1
+                : 0,
+        ),
+      });
+    }
+  }
+  return out;
+}
 
 export interface LensRunResult {
   readonly lensId: LensId;
@@ -142,8 +210,16 @@ function assertIntegrityCarriers(
  * here: the wire schema does not carry it, and the boolean is derivable
  * from `blocking`/`major` on the receiver side if ever needed.
  */
-export function runMergerPipeline(input: MergerInput): ReviewVerdict {
+export function runMergerPipeline(
+  input: MergerInput,
+  // R-C1 test seam: an injectable ceiling resolver for both authority clamps.
+  // No built-in lens has a sub-major ceiling, so the mandated
+  // clamp-past-authority scenarios cannot be built from real lenses. Defaults
+  // to the registry-backed resolver; production callers never pass it.
+  options?: { readonly ceilingFor?: CeilingResolver },
+): ReviewVerdict {
   const config = input.mergerConfig ?? DEFAULT_MERGER_CONFIG;
+  const ceilingFor: CeilingResolver = options?.ceilingFor ?? registryCeilingFor;
   const parseErrors: readonly ParseError[] = input.parseErrors ?? [];
   const nextActions: readonly NextAction[] = input.nextActions ?? [];
   const lensCoverage: readonly LensCoverageEntry[] = input.lensCoverage ?? [];
@@ -171,11 +247,31 @@ export function runMergerPipeline(input: MergerInput): ReviewVerdict {
     confidenceFloor: config.confidenceFloor,
   });
 
-  const deduped = dedupeFindings(anchor.perLens);
-  const { kept, deferred: floorDeferred } = applyBlockingPolicy(deduped, config);
-  // evidence_unverified deferrals (never deduped) precede the confidence-floor
-  // deferrals in the disclosure; suppressedFindingCount mirrors the union.
-  const deferred = [...anchor.deferred, ...floorDeferred];
+  // T-028 pipeline (R1 / R-C1): Pass A per-lens clamp -> dedup (within-lens
+  // normalize -> severity-max exact-key -> adjacency cluster) -> blocking
+  // policy (gated alwaysBlock quorum) -> Pass B final authority ceiling ->
+  // tension/verdict on the afterCeiling array.
+  const passA = clampLensFindings(anchor.perLens, ceilingFor);
+  const deduped = dedupeFindings(passA.perLens, passA.clampMeta);
+  const bp = applyBlockingPolicy(deduped, config);
+  const passB = enforceAuthorityCeiling(
+    bp.kept,
+    bp.clampedByPassA,
+    bp.escalationLineage,
+    bp.alwaysBlockBelowQuorum,
+    ceilingFor,
+  );
+  const kept = passB.kept;
+
+  // Deferral order in the disclosure: DROP-class first (evidence_unverified,
+  // then below_confidence_floor), then the RETAINED audit entries. Only the
+  // DROP class removes a finding from findings[], so only it feeds
+  // suppressedFindingCount and next-round priorDeferrals (R3 / R-C2).
+  const deferred = [
+    ...anchor.deferred,
+    ...bp.deferred,
+    ...buildRetainedAudits(passB),
+  ];
   const tensions = detectTensions(kept);
   const { verdict: baseVerdict, counts } = computeVerdict(kept);
 
@@ -221,7 +317,10 @@ export function runMergerPipeline(input: MergerInput): ReviewVerdict {
     sessionId: input.sessionId,
     parseErrors: [...parseErrors],
     deferred,
-    suppressedFindingCount: deferred.length,
+    // R3: only DROP-class deferrals remove a finding from findings[];
+    // RETAINED audit entries reference live findings and are not "suppressed".
+    suppressedFindingCount: deferred.filter((d) => isDropDeferral(d.reason))
+      .length,
     hadAnyFindings,
     nextActions: [...nextActions],
     lensCoverage: [...lensCoverage],

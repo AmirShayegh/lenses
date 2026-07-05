@@ -98,6 +98,7 @@ function renderCodeReview(opts: PerformanceLensOpts): string {
       "- Performance of test code.",
       "- Premature optimization for infrequently-run code (startup, migrations, one-time setup).",
       "- Performance patterns already optimized by the framework.",
+      "- The pagination response-contract shape -- cursor/offset parameters and pagination headers (API-design lens owns that); flag only the measured or demonstrable cost of unbounded fetching here.",
     ].join("\n"),
   );
 

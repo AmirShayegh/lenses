@@ -10,10 +10,41 @@ import { LensErrorCodeSchema } from "./error-code.js";
 import { MergedFindingSchema, type Severity } from "./finding.js";
 import {
   DeferredFindingSchema,
+  isDropDeferral,
   NextActionSchema,
   ParseErrorSchema,
   ReviewIntegrityEntrySchema,
 } from "./review-protocol.js";
+
+/**
+ * T-028 R-D3: order-insensitive structural equality for the retained-deferral
+ * membership check. Primitives via `===`, arrays index-wise, plain objects by
+ * identical key sets + recursive values. NOT `JSON.stringify` (key-order
+ * fragility), no external dependency.
+ */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null)
+    return false;
+  const aArr = Array.isArray(a);
+  const bArr = Array.isArray(b);
+  if (aArr !== bArr) return false;
+  if (aArr && bArr) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!deepEqual(a[i], b[i])) return false;
+    return true;
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const aKeys = Object.keys(ao);
+  const bKeys = Object.keys(bo);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(bo, k)) return false;
+    if (!deepEqual(ao[k], bo[k])) return false;
+  }
+  return true;
+}
 
 /** Top-level verdict returned by `lens_review_complete`. */
 export const VerdictSchema = z.enum(["approve", "revise", "reject"]);
@@ -204,13 +235,19 @@ export const ReviewVerdictSchema = z
         message: `verdict 'reject' requires blocking > 0 (got blocking=0)`,
       });
     }
-    // T-022: suppressedFindingCount is a caller-friendly mirror of
-    // deferred.length; inconsistency here is a merger bug.
-    if (val.suppressedFindingCount !== val.deferred.length) {
+    // T-028 R3: suppressedFindingCount counts ONLY DROP-class deferrals
+    // (those removed from findings[]). RETAINED audit entries
+    // (alwaysblock_below_quorum / severity_clamped_to_lens_max /
+    // severity_escalated_by_corroboration) reference live findings and are
+    // NOT suppressions. On every pre-T-028 path deferred[] holds only DROP
+    // reasons, so the drop count equals deferred.length (backward compatible).
+    const dropCount = val.deferred.filter((d) => isDropDeferral(d.reason))
+      .length;
+    if (val.suppressedFindingCount !== dropCount) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["suppressedFindingCount"],
-        message: `suppressedFindingCount (${val.suppressedFindingCount}) must equal deferred.length (${val.deferred.length})`,
+        message: `suppressedFindingCount (${val.suppressedFindingCount}) must equal the DROP-class deferral count (${dropCount})`,
       });
     }
     // T-022 (L-003 disambiguation): `hadAnyFindings === false` means no
@@ -378,10 +415,18 @@ export const ReviewVerdictSchema = z
     // least the number of EMITTED carriers of anchorRealignedFrom (across
     // both kept findings and deferrals). Strict inequality is legal --
     // dedup can drop a realigned finding that lost the confidence tiebreak.
+    // T-028 composition with T-026: a RETAINED audit entry references a LIVE
+    // findings[] member, so counting its finding on the deferred side would
+    // double-count the same realigned finding already counted in findings[].
+    // Count the deferred side over DROP-class entries only (those NOT in
+    // findings[]), keeping the invariant "count >= distinct emitted carriers".
     const realignedCarriers =
       val.findings.filter((f) => f.anchorRealignedFrom !== undefined).length +
-      val.deferred.filter((d) => d.finding.anchorRealignedFrom !== undefined)
-        .length;
+      val.deferred.filter(
+        (d) =>
+          isDropDeferral(d.reason) &&
+          d.finding.anchorRealignedFrom !== undefined,
+      ).length;
     if (val.anchorRealignedCount < realignedCarriers) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -432,5 +477,24 @@ export const ReviewVerdictSchema = z
         });
       }
     }
+    // T-028 R-D3: every RETAINED-reason deferral references a finding still
+    // live in findings[]. Membership-only (no uniqueness): multiple retained
+    // entries may reference the same finding (R-C1 permits an
+    // alwaysblock_below_quorum and a severity_clamped_to_lens_max entry on the
+    // same final finding). The `clamps` / `escalations` metadata sit beside
+    // `finding` and never participate in the comparison. DROP-class entries are
+    // exempt (their finding is intentionally absent). Backward compatible:
+    // pre-T-028 producers cannot emit a retained reason.
+    val.deferred.forEach((entry, index) => {
+      if (isDropDeferral(entry.reason)) return;
+      const present = val.findings.some((f) => deepEqual(f, entry.finding));
+      if (!present) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["deferred", index],
+          message: `retained deferral '${entry.reason}' references a finding not present in findings[]`,
+        });
+      }
+    });
   });
 export type ReviewVerdict = z.infer<typeof ReviewVerdictSchema>;

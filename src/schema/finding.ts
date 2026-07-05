@@ -67,8 +67,11 @@ const findingObjectShape = {
   // single completion round's verdict envelope, never stable across rounds
   // or cache reads. Stripped from lens input by sanitizeFindingForStorage.
   integrityKey: z.string().min(1).optional(),
-  description: z.string(),
-  suggestion: z.string(),
+  // T-028 SCOPE 4: a content-free finding is not actionable. `.min(1)` rejects
+  // an empty `description`/`suggestion` at the strict per-finding boundary, so
+  // it surfaces as a `parseErrors[]` entry rather than reaching the verdict.
+  description: z.string().min(1),
+  suggestion: z.string().min(1),
   confidence: z.number().min(0).max(1),
 };
 

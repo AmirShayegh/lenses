@@ -48,6 +48,7 @@ function renderCodeReview(): string {
       "- Single-threaded code paths (verify by checking execution context).",
       "- Async/await used purely for I/O sequencing in inherently sequential flows with no shared state mutation.",
       "- Framework-managed concurrency where the framework guarantees safety.",
+      "- Whether a TOCTOU race is exploitable as a security or auth-check bypass (Security lens owns that framing); flag the race mechanics -- the check-to-use window and the interleaving -- here.",
     ].join("\n"),
   );
 

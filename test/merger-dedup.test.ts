@@ -15,8 +15,8 @@ function finding(
     category: overrides.category ?? "generic",
     file: overrides.file ?? null,
     line: overrides.line ?? null,
-    description: overrides.description ?? "",
-    suggestion: overrides.suggestion ?? "",
+    description: overrides.description ?? "d",
+    suggestion: overrides.suggestion ?? "s",
     confidence: overrides.confidence ?? 0.8,
     ...overrides,
   };
@@ -39,12 +39,12 @@ function lens(lensId: LensId, output: LensOutput): LensRunResult {
 }
 
 describe("dedupeFindings -- trivial cases", () => {
-  it("empty perLens returns []", () => {
-    expect(dedupeFindings([])).toEqual([]);
+  it("empty perLens returns empty findings", () => {
+    expect(dedupeFindings([]).findings).toEqual([]);
   });
 
-  it("single lens with a single finding → one merged with contributingLenses=[lensId]", () => {
-    const merged = dedupeFindings([
+  it("single lens with a single finding -> one merged with contributingLenses=[lensId]", () => {
+    const { findings } = dedupeFindings([
       lens(
         "security",
         ok([
@@ -57,15 +57,15 @@ describe("dedupeFindings -- trivial cases", () => {
         ]),
       ),
     ]);
-    expect(merged).toHaveLength(1);
-    expect(merged[0]!.id).toBe("s-1");
-    expect(merged[0]!.contributingLenses).toEqual(["security"]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.id).toBe("s-1");
+    expect(findings[0]!.contributingLenses).toEqual(["security"]);
   });
 });
 
-describe("dedupeFindings -- cross-lens dedup", () => {
-  it("two lenses same (file, line, category), higher confidence wins; contributingLenses in first-seen order", () => {
-    const merged = dedupeFindings([
+describe("dedupeFindings -- cross-lens dedup (severity-max, T-028)", () => {
+  it("two lenses same key: winner id/text from higher confidence, severity = max", () => {
+    const { findings } = dedupeFindings([
       lens(
         "security",
         ok([
@@ -93,18 +93,18 @@ describe("dedupeFindings -- cross-lens dedup", () => {
         ]),
       ),
     ]);
-    expect(merged).toHaveLength(1);
-    // Winner = clean-code (higher confidence).
-    expect(merged[0]!.id).toBe("cc-1");
-    expect(merged[0]!.severity).toBe("minor");
-    expect(merged[0]!.confidence).toBeCloseTo(0.9);
-    expect(merged[0]!.description).toBe("cc desc");
-    // First-seen lens first.
-    expect(merged[0]!.contributingLenses).toEqual(["security", "clean-code"]);
+    expect(findings).toHaveLength(1);
+    // Representative id/text = clean-code (higher confidence).
+    expect(findings[0]!.id).toBe("cc-1");
+    expect(findings[0]!.description).toBe("cc desc");
+    expect(findings[0]!.confidence).toBeCloseTo(0.9);
+    // Severity = max(major, minor) = major (corroboration escalates).
+    expect(findings[0]!.severity).toBe("major");
+    expect(findings[0]!.contributingLenses).toEqual(["security", "clean-code"]);
   });
 
-  it("confidence tie → first-seen wins (stable tiebreak)", () => {
-    const merged = dedupeFindings([
+  it("confidence tie -> higher severity rank wins (R-C5 total order)", () => {
+    const { findings } = dedupeFindings([
       lens(
         "security",
         ok([
@@ -130,14 +130,80 @@ describe("dedupeFindings -- cross-lens dedup", () => {
         ]),
       ),
     ]);
-    expect(merged).toHaveLength(1);
-    expect(merged[0]!.id).toBe("sec-1");
-    expect(merged[0]!.severity).toBe("major");
-    expect(merged[0]!.contributingLenses).toEqual(["security", "clean-code"]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.id).toBe("sec-1");
+    expect(findings[0]!.severity).toBe("major");
+    expect(findings[0]!.contributingLenses).toEqual(["security", "clean-code"]);
   });
 
-  it("same (file, line) but different categories → two separate merged findings", () => {
-    const merged = dedupeFindings([
+  it("ACCEPTANCE: blocking/0.7 + minor/0.9 merge to blocking severity, both lenses", () => {
+    const { findings } = dedupeFindings([
+      lens(
+        "security",
+        ok([
+          finding("blocking", {
+            id: "sec-1",
+            file: "src/x.ts",
+            line: 10,
+            category: "auth",
+            confidence: 0.7,
+          }),
+        ]),
+      ),
+      lens(
+        "clean-code",
+        ok([
+          finding("minor", {
+            id: "cc-1",
+            file: "src/x.ts",
+            line: 10,
+            category: "auth",
+            confidence: 0.9,
+          }),
+        ]),
+      ),
+    ]);
+    expect(findings).toHaveLength(1);
+    // Winner id/text = cc-1 (confidence 0.9); severity = max = blocking.
+    expect(findings[0]!.severity).toBe("blocking");
+    expect(findings[0]!.id).toBe("cc-1");
+    expect(findings[0]!.contributingLenses).toEqual(["security", "clean-code"]);
+  });
+
+  it("R-C5 determinism: equal-confidence, submitted in both orders, deep-equal output", () => {
+    const a = finding("major", {
+      id: "a-1",
+      file: "src/x.ts",
+      line: 5,
+      category: "auth",
+      confidence: 0.7,
+    });
+    const b = finding("major", {
+      id: "b-1",
+      file: "src/x.ts",
+      line: 5,
+      category: "auth",
+      confidence: 0.7,
+    });
+    const forward = dedupeFindings([
+      lens("security", ok([a])),
+      lens("clean-code", ok([b])),
+    ]).findings;
+    const backward = dedupeFindings([
+      lens("clean-code", ok([b])),
+      lens("security", ok([a])),
+    ]).findings;
+    // Winner = smaller lens id asc ("clean-code" < "security") -> b-1.
+    expect(forward[0]!.id).toBe("b-1");
+    expect(forward[0]!.severity).toBe(backward[0]!.severity);
+    expect(forward[0]!.id).toBe(backward[0]!.id);
+    expect([...forward[0]!.contributingLenses].sort()).toEqual(
+      [...backward[0]!.contributingLenses].sort(),
+    );
+  });
+
+  it("same (file, line) but different categories -> two separate merged findings", () => {
+    const { findings } = dedupeFindings([
       lens(
         "security",
         ok([
@@ -161,13 +227,13 @@ describe("dedupeFindings -- cross-lens dedup", () => {
         ]),
       ),
     ]);
-    expect(merged).toHaveLength(2);
-    const categories = merged.map((m) => m.category).sort();
+    expect(findings).toHaveLength(2);
+    const categories = findings.map((m) => m.category).sort();
     expect(categories).toEqual(["auth", "naming"]);
   });
 
-  it("same (file, category) with line=null across lenses → merged", () => {
-    const merged = dedupeFindings([
+  it("same (file, category) with line=null across lenses -> merged (severity max)", () => {
+    const { findings } = dedupeFindings([
       lens(
         "clean-code",
         ok([
@@ -193,17 +259,17 @@ describe("dedupeFindings -- cross-lens dedup", () => {
         ]),
       ),
     ]);
-    expect(merged).toHaveLength(1);
-    expect(merged[0]!.id).toBe("perf-1");
-    expect(merged[0]!.severity).toBe("major");
-    expect(merged[0]!.contributingLenses).toEqual([
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.id).toBe("perf-1");
+    expect(findings[0]!.severity).toBe("major");
+    expect(findings[0]!.contributingLenses).toEqual([
       "clean-code",
       "performance",
     ]);
   });
 
   it("file=null findings are NOT deduped across lenses (no locality)", () => {
-    const merged = dedupeFindings([
+    const { findings } = dedupeFindings([
       lens(
         "clean-code",
         ok([
@@ -227,46 +293,161 @@ describe("dedupeFindings -- cross-lens dedup", () => {
         ]),
       ),
     ]);
-    expect(merged).toHaveLength(2);
-    const lensLists = merged.map((m) => m.contributingLenses);
+    expect(findings).toHaveLength(2);
+    const lensLists = findings.map((m) => m.contributingLenses);
     expect(lensLists).toEqual([["clean-code"], ["test-quality"]]);
   });
 });
 
-describe("dedupeFindings -- within-lens dedup", () => {
-  it("same lens reports same (file, line, category) twice → merged; contributingLenses has the lens once", () => {
-    const merged = dedupeFindings([
+describe("dedupeFindings -- within-lens normalization (pen resolution 2)", () => {
+  it("same lens same key: severity-rank winner (not confidence), one contributing lens", () => {
+    const { findings } = dedupeFindings([
       lens(
         "security",
         ok([
-          finding("major", {
-            id: "sec-1",
-            file: "src/x.ts",
-            line: 3,
-            category: "auth",
-            confidence: 0.8,
-          }),
           finding("minor", {
-            id: "sec-2",
+            id: "sec-hi-conf",
             file: "src/x.ts",
             line: 3,
             category: "auth",
-            confidence: 0.5,
+            confidence: 0.9,
+          }),
+          finding("blocking", {
+            id: "sec-lo-conf",
+            file: "src/x.ts",
+            line: 3,
+            category: "auth",
+            confidence: 0.1,
           }),
         ]),
       ),
     ]);
-    expect(merged).toHaveLength(1);
-    // First-seen of the two within-lens findings wins (higher confidence
-    // here anyway, and also first).
-    expect(merged[0]!.id).toBe("sec-1");
-    expect(merged[0]!.contributingLenses).toEqual(["security"]);
+    expect(findings).toHaveLength(1);
+    // Within-lens winner = highest severity rank -> the blocking/0.1 finding.
+    // The high-confidence minor is NOT paired with the escalated severity.
+    expect(findings[0]!.severity).toBe("blocking");
+    expect(findings[0]!.id).toBe("sec-lo-conf");
+    expect(findings[0]!.confidence).toBeCloseTo(0.1);
+    expect(findings[0]!.contributingLenses).toEqual(["security"]);
+  });
+});
+
+describe("dedupeFindings -- adjacency clustering (R-C4 / R11)", () => {
+  it("cross-lens lines 42 and 43 collapse into ONE merged with both lenses", () => {
+    const { findings } = dedupeFindings([
+      lens(
+        "performance",
+        ok([
+          finding("major", {
+            id: "perf-1",
+            file: "src/x.ts",
+            line: 42,
+            category: "pagination",
+          }),
+        ]),
+      ),
+      lens(
+        "api-design",
+        ok([
+          finding("major", {
+            id: "api-1",
+            file: "src/x.ts",
+            line: 43,
+            category: "pagination",
+          }),
+        ]),
+      ),
+    ]);
+    expect(findings).toHaveLength(1);
+    expect([...findings[0]!.contributingLenses].sort()).toEqual([
+      "api-design",
+      "performance",
+    ]);
+  });
+
+  it("single-lens within-lens adjacency: lines 42 and 43 collapse, one contributing lens", () => {
+    const { findings } = dedupeFindings([
+      lens(
+        "performance",
+        ok([
+          finding("major", {
+            id: "perf-1",
+            file: "src/x.ts",
+            line: 42,
+            category: "pagination",
+          }),
+          finding("major", {
+            id: "perf-2",
+            file: "src/x.ts",
+            line: 43,
+            category: "pagination",
+          }),
+        ]),
+      ),
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.contributingLenses).toEqual(["performance"]);
+  });
+
+  it("over-merge guard: lines 42 vs 45 (delta 3) stay separate", () => {
+    const { findings } = dedupeFindings([
+      lens(
+        "performance",
+        ok([
+          finding("major", {
+            id: "perf-1",
+            file: "src/x.ts",
+            line: 42,
+            category: "pagination",
+          }),
+        ]),
+      ),
+      lens(
+        "api-design",
+        ok([
+          finding("major", {
+            id: "api-1",
+            file: "src/x.ts",
+            line: 45,
+            category: "pagination",
+          }),
+        ]),
+      ),
+    ]);
+    expect(findings).toHaveLength(2);
+  });
+
+  it("R-C4 no transitive chaining: lines 10, 12, 14 -> TWO clusters [10,12] and [14]", () => {
+    const mk = (id: string, line: number, lensId: LensId): LensRunResult =>
+      lens(
+        lensId,
+        ok([
+          finding("major", {
+            id,
+            file: "src/x.ts",
+            line,
+            category: "pagination",
+          }),
+        ]),
+      );
+    const { findings } = dedupeFindings([
+      mk("a", 10, "performance"),
+      mk("b", 12, "api-design"),
+      mk("c", 14, "security"),
+    ]);
+    expect(findings).toHaveLength(2);
+    // Anchor window [10,12] merges (delta 2) into one finding carrying both
+    // lenses; a NEW cluster opens at 14 (14 - 10 = 4 > 2) with security alone.
+    const bySize = findings
+      .map((f) => [...f.contributingLenses].sort())
+      .sort((a, b) => a.length - b.length);
+    expect(bySize).toEqual([["security"], ["api-design", "performance"]]);
   });
 });
 
 describe("dedupeFindings -- status=error/skipped", () => {
   it("error and skipped statuses contribute nothing", () => {
-    const merged = dedupeFindings([
+    const { findings } = dedupeFindings([
       lens("security", errored("parse failure")),
       lens("performance", skipped("not in surface")),
       lens(
@@ -281,15 +462,15 @@ describe("dedupeFindings -- status=error/skipped", () => {
         ]),
       ),
     ]);
-    expect(merged).toHaveLength(1);
-    expect(merged[0]!.id).toBe("cc-1");
-    expect(merged[0]!.contributingLenses).toEqual(["clean-code"]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.id).toBe("cc-1");
+    expect(findings[0]!.contributingLenses).toEqual(["clean-code"]);
   });
 });
 
 describe("dedupeFindings -- ordering determinism", () => {
   it("file=null findings precede keyed buckets; keyed buckets in first-insertion order", () => {
-    const merged = dedupeFindings([
+    const { findings } = dedupeFindings([
       lens(
         "clean-code",
         ok([
@@ -319,7 +500,7 @@ describe("dedupeFindings -- ordering determinism", () => {
         ]),
       ),
     ]);
-    expect(merged.map((m) => m.id)).toEqual(["cc-null", "cc-b", "sec-a"]);
+    expect(findings.map((m) => m.id)).toEqual(["cc-null", "cc-b", "sec-a"]);
   });
 
   it("result is deterministic across repeated identical calls", () => {
@@ -351,52 +532,13 @@ describe("dedupeFindings -- ordering determinism", () => {
     ];
     const a = dedupeFindings(input);
     const b = dedupeFindings(input);
-    expect(a).toEqual(b);
-  });
-});
-
-describe("dedupeFindings -- known T-010 trade-off", () => {
-  it("major blocker with lower confidence is displaced by minor with higher confidence (severity copied from winner)", () => {
-    const merged = dedupeFindings([
-      lens(
-        "security",
-        ok([
-          finding("blocking", {
-            id: "sec-1",
-            file: "src/x.ts",
-            line: 10,
-            category: "auth",
-            confidence: 0.6,
-          }),
-        ]),
-      ),
-      lens(
-        "clean-code",
-        ok([
-          finding("minor", {
-            id: "cc-1",
-            file: "src/x.ts",
-            line: 10,
-            category: "auth",
-            confidence: 0.95,
-          }),
-        ]),
-      ),
-    ]);
-    expect(merged).toHaveLength(1);
-    // Trade-off: minor wins because confidence is higher.
-    // T-011 will layer blocking policy to address this.
-    expect(merged[0]!.severity).toBe("minor");
-    expect(merged[0]!.id).toBe("cc-1");
-    expect(merged[0]!.contributingLenses).toEqual(["security", "clean-code"]);
+    expect(a.findings).toEqual(b.findings);
   });
 });
 
 describe("dedupeFindings -- key separator robustness", () => {
   it("distinct (file, line, category) tuples that string-concatenate similarly do not collide", () => {
-    // Without a separator, ("a", 12, "b") and ("a1", 2, "b") would both
-    // render to "a12b". With `\x00` separators, they cannot collide.
-    const merged = dedupeFindings([
+    const { findings } = dedupeFindings([
       lens(
         "security",
         ok([
@@ -420,6 +562,6 @@ describe("dedupeFindings -- key separator robustness", () => {
         ]),
       ),
     ]);
-    expect(merged).toHaveLength(2);
+    expect(findings).toHaveLength(2);
   });
 });

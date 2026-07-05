@@ -41,6 +41,7 @@ export {
 export {
   BlockingPolicySchema,
   DEFAULT_ALWAYS_BLOCK,
+  DEFAULT_ALWAYSBLOCK_QUORUM,
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_MERGER_CONFIG,
   MergerConfigSchema,
@@ -49,13 +50,21 @@ export {
 } from "./merger-config.js";
 
 export {
+  ClampEventSchema,
+  ClampStageSchema,
   DeferralReasonSchema,
   DeferredFindingSchema,
+  DROP_DEFERRAL_REASONS,
+  isDropDeferral,
   NextActionSchema,
   ParseErrorPhaseSchema,
   ParseErrorSchema,
+  RETAINED_DEFERRAL_REASONS,
   ReviewIntegrityEntrySchema,
+  toNextRoundDeferralKeys,
   ZodIssueWireSchema,
+  type ClampEvent,
+  type ClampStage,
   type DeferralReason,
   type DeferredFinding,
   type NextAction,

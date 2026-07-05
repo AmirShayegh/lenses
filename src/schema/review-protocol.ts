@@ -12,7 +12,7 @@
 
 import { z } from "zod";
 
-import { MergedFindingSchema } from "./finding.js";
+import { MergedFindingSchema, SeveritySchema, type DeferralKey } from "./finding.js";
 
 /**
  * Where the per-lens parse failed:
@@ -80,8 +80,98 @@ export const DeferralReasonSchema = z.enum([
   "over_finding_budget",
   "non_blocking_suppressed",
   "evidence_unverified",
+  // T-028 R2 / R-D1: an alwaysBlock-category finding that failed the quorum
+  // gate. RETAINED at `major` in findings[]; never a silent reject.
+  "alwaysblock_below_quorum",
+  // T-028 R-C1 / R3 / R4 / R-D2: a finding demoted to its (per-lens or
+  // authority) severity ceiling. RETAINED at the clamped severity; carries
+  // `clamps`.
+  "severity_clamped_to_lens_max",
+  // T-028 pen resolution 1-3: a finding whose severity was raised by
+  // severity-max dedup because a DIFFERENT lens corroborated at a higher
+  // severity. RETAINED at the escalated severity; carries `escalations`.
+  "severity_escalated_by_corroboration",
 ]);
 export type DeferralReason = z.infer<typeof DeferralReasonSchema>;
+
+/**
+ * T-028 R3: the deferral taxonomy has two disjoint classes with a single
+ * machine-readable source of truth.
+ *
+ *  - DROP reasons: the finding is REMOVED from `findings[]`.
+ *    `suppressedFindingCount` counts ONLY these; `toNextRoundDeferralKeys`
+ *    forwards ONLY these into the next round's priorDeferrals (R12 / R-C2).
+ *  - RETAINED reasons: the finding STAYS in `findings[]` at an adjusted
+ *    severity; the deferred entry is an audit record. Forwarding a RETAINED
+ *    entry as a priorDeferral would silently suppress a live finding next
+ *    round, so it is fenced out of `toNextRoundDeferralKeys` (R-C2).
+ */
+export const DROP_DEFERRAL_REASONS = [
+  "below_confidence_floor",
+  "over_finding_budget",
+  "non_blocking_suppressed",
+  "evidence_unverified",
+] as const satisfies readonly DeferralReason[];
+
+export const RETAINED_DEFERRAL_REASONS = [
+  "alwaysblock_below_quorum",
+  "severity_clamped_to_lens_max",
+  "severity_escalated_by_corroboration",
+] as const satisfies readonly DeferralReason[];
+
+const DROP_DEFERRAL_SET: ReadonlySet<DeferralReason> = new Set(
+  DROP_DEFERRAL_REASONS,
+);
+
+/** True iff the reason removes the finding from `findings[]` (R3). */
+export function isDropDeferral(reason: DeferralReason): boolean {
+  return DROP_DEFERRAL_SET.has(reason);
+}
+
+/**
+ * T-028 R-D2: the two clamp passes (R1 / R-C1). `lens_clamp` is Pass A
+ * (`clampLensFindings`, per-lens ceiling before dedup); `authority_ceiling`
+ * is Pass B (`enforceAuthorityCeiling`, the final authority clamp after all
+ * policy transforms).
+ */
+export const ClampStageSchema = z.enum(["lens_clamp", "authority_ceiling"]);
+export type ClampStage = z.infer<typeof ClampStageSchema>;
+
+/**
+ * T-028 R-D2: one clamp event in a `severity_clamped_to_lens_max` finding's
+ * lineage. R-C1 coalesces at most ONE audit entry per final finding, so its
+ * `clamps` array carries EVERY clamp event that fired across the finding's
+ * lineage.
+ */
+export const ClampEventSchema = z
+  .object({
+    lensId: z.string().min(1),
+    originalSeverity: SeveritySchema,
+    clampedSeverity: SeveritySchema,
+    stage: ClampStageSchema,
+  })
+  .strict();
+export type ClampEvent = z.infer<typeof ClampEventSchema>;
+
+/**
+ * T-028 pen resolution 1-3: one severity-source event in a
+ * `severity_escalated_by_corroboration` finding's escalation lineage. It
+ * names the CROSS-lens source finding that supplied the escalated severity.
+ *
+ * INTERNAL schema by design (pen resolution 4 export fence): it is embedded
+ * in `DeferredFindingSchema.escalations` but, unlike the R-D2 clamp names, is
+ * NOT surfaced from any barrel. The public export set grows only by the R7 /
+ * R-C2 / R-D2 ruled names.
+ */
+export const EscalationEventSchema = z
+  .object({
+    lensId: z.string().min(1),
+    findingId: z.string().min(1),
+    severity: SeveritySchema,
+    confidence: z.number().min(0).max(1),
+  })
+  .strict();
+export type EscalationEvent = z.infer<typeof EscalationEventSchema>;
 
 /**
  * T-026 R8 / R-D4: one entry per survived-and-flagged finding whose quoted
@@ -114,9 +204,77 @@ export const DeferredFindingSchema = z
   .object({
     finding: MergedFindingSchema,
     reason: DeferralReasonSchema,
+    // T-028 R-D2: present iff reason is `severity_clamped_to_lens_max`.
+    clamps: z.array(ClampEventSchema).min(1).optional(),
+    // T-028 pen resolution 3: present iff reason is
+    // `severity_escalated_by_corroboration`.
+    escalations: z.array(EscalationEventSchema).min(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((val, ctx) => {
+    // R-D2: the clamp/escalation metadata is REQUIRED for its own reason and
+    // FORBIDDEN for every other reason (in particular
+    // `alwaysblock_below_quorum` never carries clamps -- its demotion is the
+    // R2 gate surfacing, not an authority clamp).
+    const wantsClamps = val.reason === "severity_clamped_to_lens_max";
+    if (wantsClamps && val.clamps === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["clamps"],
+        message: `reason '${val.reason}' requires clamps`,
+      });
+    }
+    if (!wantsClamps && val.clamps !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["clamps"],
+        message: `clamps is only valid with reason 'severity_clamped_to_lens_max' (got '${val.reason}')`,
+      });
+    }
+    const wantsEscalations =
+      val.reason === "severity_escalated_by_corroboration";
+    if (wantsEscalations && val.escalations === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["escalations"],
+        message: `reason '${val.reason}' requires escalations`,
+      });
+    }
+    if (!wantsEscalations && val.escalations !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["escalations"],
+        message: `escalations is only valid with reason 'severity_escalated_by_corroboration' (got '${val.reason}')`,
+      });
+    }
+  });
 export type DeferredFinding = z.infer<typeof DeferredFindingSchema>;
+
+/**
+ * T-028 R-C2: the ONLY sanctioned constructor of next-round priorDeferrals
+ * from a verdict's `deferred[]`. Keeps only DROP-class entries (R3) then
+ * expands each into one DeferralKey per contributing lens (the preamble
+ * filters ownDeferrals by lensId). A RETAINED audit entry references a finding
+ * still live in `findings[]`; forwarding it would silently suppress that live
+ * finding next round, so it is fenced out here.
+ */
+export function toNextRoundDeferralKeys(
+  deferred: readonly DeferredFinding[],
+): DeferralKey[] {
+  const keys: DeferralKey[] = [];
+  for (const entry of deferred) {
+    if (!isDropDeferral(entry.reason)) continue;
+    for (const lensId of entry.finding.contributingLenses) {
+      keys.push({
+        lensId,
+        file: entry.finding.file,
+        line: entry.finding.line,
+        category: entry.finding.category,
+      });
+    }
+  }
+  return keys;
+}
 
 /**
  * A cooperative retry instruction the caller honors by spawning the named

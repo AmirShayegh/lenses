@@ -29,8 +29,8 @@ function finding(
     category: overrides.category ?? "generic",
     file: overrides.file ?? null,
     line: overrides.line ?? null,
-    description: overrides.description ?? "",
-    suggestion: overrides.suggestion ?? "",
+    description: overrides.description ?? "d",
+    suggestion: overrides.suggestion ?? "s",
     confidence: overrides.confidence ?? 0.8,
     ...overrides,
   };
@@ -225,11 +225,11 @@ describe("runMergerPipeline -- cross-lens dedup (T-010)", () => {
     expect(v.major).toBe(0);
   });
 
-  it("minor-wins-over-major trade-off propagates to the verdict (T-010 known behavior)", () => {
-    // A major-severity low-confidence finding is displaced by a minor-severity
-    // higher-confidence finding at the same key. Post-T-010 the surviving
-    // finding is `minor`, so the verdict is `approve` (no major remains).
-    // T-011 will layer blocking policy on top; this test codifies the trade-off.
+  it("T-028 severity-max: minor winner escalated to major by corroboration", () => {
+    // A minor-severity higher-confidence finding wins id/text at the key, but
+    // severity is max(major, minor) = major (corroboration escalates, never
+    // demotes). The cross-lens escalation surfaces a
+    // severity_escalated_by_corroboration retained audit naming clean-code.
     const v = runMergerPipeline({
       reviewId: RID,
       sessionId: SID,
@@ -261,14 +261,24 @@ describe("runMergerPipeline -- cross-lens dedup (T-010)", () => {
       ],
     });
     expect(v.findings).toHaveLength(1);
-    expect(v.findings[0]!.severity).toBe("minor");
+    expect(v.findings[0]!.id).toBe("perf-1"); // winner id/text (confidence)
+    expect(v.findings[0]!.severity).toBe("major"); // severity = max
     expect(v.findings[0]!.contributingLenses).toEqual([
       "clean-code",
       "performance",
     ]);
-    expect(v.verdict).toBe("approve");
-    expect(v.major).toBe(0);
-    expect(v.minor).toBe(1);
+    expect(v.verdict).toBe("revise");
+    expect(v.major).toBe(1);
+    expect(v.minor).toBe(0);
+    const escalation = v.deferred.find(
+      (d) => d.reason === "severity_escalated_by_corroboration",
+    );
+    expect(escalation).toBeDefined();
+    expect(escalation!.escalations!.map((e) => e.lensId)).toEqual([
+      "clean-code",
+    ]);
+    // RETAINED audit: the finding stays live and is not "suppressed".
+    expect(v.suppressedFindingCount).toBe(0);
   });
 });
 
