@@ -116,6 +116,90 @@ export function sanitizeFindingForStorage(f: LensFinding): LensFinding {
 }
 
 /**
+ * T-026 codex round: end index of the C-style quoted token starting at
+ * `s[0] === '"'`. Skips backslash escapes; -1 when unterminated.
+ */
+function quotedTokenEnd(s: string): number {
+  for (let i = 1; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "\\") {
+      i += 1; // the escaped char can never close the token
+      continue;
+    }
+    if (ch === '"') return i;
+  }
+  return -1;
+}
+
+/**
+ * T-026 codex round: decode a git C-style quoted path (`"..."` including the
+ * surrounding quotes). git quotes header paths containing spaces, tabs,
+ * quotes, backslashes, or (under core.quotePath, the default) non-ASCII
+ * bytes. Escapes decoded: \a \b \f \n \r \t \v \" \\ and 1-3 digit octal
+ * byte sequences (\NNN); the escape stream is decoded to BYTES first and
+ * then interpreted as UTF-8, because git emits multibyte characters as
+ * per-byte octal runs (e.g. \303\251). A non-quoted input returns unchanged.
+ */
+function decodeGitQuotedPath(quoted: string): string {
+  if (
+    quoted.length < 2 ||
+    !quoted.startsWith('"') ||
+    !quoted.endsWith('"')
+  ) {
+    return quoted;
+  }
+  const inner = quoted.slice(1, -1);
+  const bytes: number[] = [];
+  let i = 0;
+  while (i < inner.length) {
+    if (inner[i] !== "\\") {
+      let j = i;
+      while (j < inner.length && inner[j] !== "\\") j += 1;
+      for (const b of Buffer.from(inner.slice(i, j), "utf8")) bytes.push(b);
+      i = j;
+      continue;
+    }
+    i += 1; // consume the backslash
+    const e = inner[i];
+    if (e === undefined) {
+      bytes.push(0x5c); // trailing lone backslash: keep it literally
+      break;
+    }
+    if (e >= "0" && e <= "7") {
+      let oct = "";
+      while (oct.length < 3 && i < inner.length) {
+        const d = inner[i]!;
+        if (d < "0" || d > "7") break;
+        oct += d;
+        i += 1;
+      }
+      bytes.push(Number.parseInt(oct, 8) & 0xff);
+      continue;
+    }
+    const simple: Record<string, number> = {
+      a: 0x07,
+      b: 0x08,
+      f: 0x0c,
+      n: 0x0a,
+      r: 0x0d,
+      t: 0x09,
+      v: 0x0b,
+      '"': 0x22,
+      "\\": 0x5c,
+    };
+    const mapped = simple[e];
+    if (mapped !== undefined) {
+      bytes.push(mapped);
+    } else {
+      // Unknown escape: keep the escaped character verbatim.
+      for (const b of Buffer.from(e, "utf8")) bytes.push(b);
+    }
+    i += 1;
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+/**
  * T-026 R-C3 / R-D3(1): parse a unified diff into a per-file map of new-side
  * line number -> new-side line text. Each hunk's new-side extension is BOUNDED
  * by the `@@ -a,b +c,d @@` header's declared new-side count `d` (an omitted
@@ -126,6 +210,13 @@ export function sanitizeFindingForStorage(f: LensFinding): LensFinding {
  * header path with the "b/" prefix stripped ONLY when the `diff --git` header
  * confirms the standard a/ b/ prefix form (pen res 3); "+++ /dev/null" (a
  * deletion) creates no entry. Standard git prefixes are the primary contract.
+ *
+ * Codex round: C-style quoted paths are decoded BEFORE prefix handling
+ * (`decodeGitQuotedPath`), so index keys equal real repo paths for every
+ * path form git emits -- spaces, tabs, quotes, and octal-escaped non-ASCII
+ * bytes included. The `diff --git` prefix-form check recognizes each side
+ * independently in both spellings (`a/...` or `"a/..."`), because git quotes
+ * only the side that needs quoting.
  */
 export function buildNewSideIndex(diff: string): Map<string, Map<number, string>> {
   const index = new Map<string, Map<number, string>>();
@@ -163,9 +254,13 @@ export function buildNewSideIndex(diff: string): Map<string, Map<number, string>
 
     if (raw.startsWith("diff --git ")) {
       // Confirm the standard a/ b/ prefix form for the following file
-      // section (pen res 3). A no-prefix diff (git diff --no-prefix) does
-      // not match and its "+++" path is used verbatim.
-      prefixForm = /^diff --git a\/.+ b\/.+$/.test(raw);
+      // section (pen res 3). Each side may independently be C-style quoted
+      // (git quotes only the side that needs it), so recognize both
+      // spellings per side: `a/...` or `"a/..."`, then a later `b/...` or
+      // `"b/..."`. A no-prefix diff (git diff --no-prefix) matches neither
+      // form and its "+++" path is used verbatim.
+      prefixForm =
+        /^diff --git (?:a\/|"a\/)/.test(raw) && / (?:b\/|"b\/)/.test(raw);
       currentFile = null;
       hunkRemaining = 0;
       continue;
@@ -176,8 +271,18 @@ export function buildNewSideIndex(diff: string): Map<string, Map<number, string>
     }
     if (raw.startsWith("+++ ")) {
       let path = raw.slice(4);
-      const tab = path.indexOf("\t");
-      if (tab !== -1) path = path.slice(0, tab);
+      if (path.startsWith('"')) {
+        // Codex round: C-style quoted path. The unescaped closing quote
+        // ends the token; decode escapes BEFORE the prefix strip so the
+        // index key equals the real repo path. An unterminated quote is
+        // malformed input and is kept verbatim (it can never match a real
+        // finding path, which is the safe direction: pass-through per R2).
+        const end = quotedTokenEnd(path);
+        if (end !== -1) path = decodeGitQuotedPath(path.slice(0, end + 1));
+      } else {
+        const tab = path.indexOf("\t");
+        if (tab !== -1) path = path.slice(0, tab);
+      }
       if (path === "/dev/null") {
         currentFile = null;
       } else {

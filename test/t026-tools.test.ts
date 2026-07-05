@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { readIndex } from "../src/cache/in-flight.js";
 import { writeLensCache } from "../src/cache/lens-cache.js";
 import type { LensId } from "../src/lenses/prompts/index.js";
 import { ReviewVerdictSchema, type LensFinding } from "../src/schema/index.js";
@@ -261,6 +262,71 @@ describe("T-026 R11 restart rehydration", () => {
     // Realignment happened using the rehydrated artifact.
     expect(v.findings[0]!.line).toBe(4);
     expect(v.findings[0]!.anchorRealignedFrom).toBe(1);
+  });
+});
+
+describe("T-026 truncated-artifact normalize-only posture (codex minor 4)", () => {
+  // Big enough that the serialized IndexRecord exceeds INDEX_BYTE_BUDGET
+  // (~10.48MB): 120k new-side lines of ~105 chars each.
+  const BIG_N = 120_000;
+  function makeBigDiff(): { diff: string; lastContent: string } {
+    const pad = "x".repeat(80);
+    const body: string[] = [];
+    for (let i = 1; i <= BIG_N; i++) body.push(`+const filler_${i} = "${pad}";`);
+    const lastContent = body[BIG_N - 1]!.slice(1);
+    const diff = [
+      "diff --git a/src/big.ts b/src/big.ts",
+      "--- /dev/null",
+      "+++ b/src/big.ts",
+      `@@ -0,0 +1,${BIG_N} @@`,
+      ...body,
+    ].join("\n");
+    return { diff, lastContent };
+  }
+
+  it("an over-budget artifact persists EMPTY; a restarted review runs normalize-only, never truncated-prefix enforcement", async () => {
+    const { diff, lastContent } = makeBigDiff();
+    const { reviewId } = await startCode(["src/big.ts"], diff);
+
+    // The persisted artifact was stored empty (all-or-nothing posture);
+    // changedFiles stays intact.
+    const idx = readIndex(reviewId);
+    expect(idx).toBeDefined();
+    expect(idx!.artifact).toBe("");
+    expect(idx!.changedFiles).toEqual(["src/big.ts"]);
+
+    // Restart: memory gone, disk intact. The rehydrated session holds the
+    // empty artifact -> anchor pass is normalize-only.
+    _clearMapOnlyForTests();
+    expect(getReview(reviewId)?.artifact).toBe("");
+
+    // A finding whose evidence lies beyond where a truncation cut would
+    // have fallen (the last line of the diff) must PASS THROUGH with server
+    // fields stripped: not deferred, not flagged, line intact.
+    const { body } = await complete(reviewId, [
+      {
+        lensId: "security",
+        output: okOut([
+          fnd({
+            id: "deep",
+            severity: "minor",
+            file: "src/big.ts",
+            line: BIG_N,
+            anchorRealignedFrom: 42, // lens-injected server field
+            snippet: { quote: lastContent, startLine: BIG_N },
+          }),
+        ]),
+      },
+      { lensId: "clean-code", output: okOut([]) },
+    ]);
+    const v = ReviewVerdictSchema.parse(body);
+    expect(v.findings).toHaveLength(1);
+    expect(v.findings[0]!.line).toBe(BIG_N);
+    expect(v.findings[0]!.anchorRealignedFrom).toBeUndefined();
+    expect(v.deferred).toHaveLength(0);
+    expect(v.reviewIntegrity).toHaveLength(0);
+    expect(v.evidenceUnverifiedCount).toBe(0);
+    expect(v.anchorRealignedCount).toBe(0);
   });
 });
 

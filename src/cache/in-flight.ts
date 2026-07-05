@@ -205,72 +205,29 @@ export type IndexRecord = z.infer<typeof IndexRecordSchema>;
  * read gates (`safeReadJson`, `readPrompt`) reject any in-flight file whose
  * on-disk size exceeds `MAX_FILE_BYTES`, so persisting an index right AT
  * that cap would make it unreadable and destroy T-024 restart rehydration.
- * A 4 KB headroom below the cap leaves room for the non-artifact fields plus
- * a slice-rounding margin.
+ * A 4 KB headroom below the cap leaves room for the non-artifact fields.
  */
 export const INDEX_BYTE_BUDGET = MAX_FILE_BYTES - 4096;
 
 /**
- * JSON-string-escaped UTF-8 byte cost of a single code point, matching how
- * `JSON.stringify` encodes it inside a string. Control chars with short
- * escapes (\b \t \n \f \r), `"`, and `\` cost 2 bytes; other control chars
- * cost 6 (\u00XX); everything else is emitted verbatim at its UTF-8 length.
- */
-function jsonEscapedCodePointBytes(cp: string): number {
-  const code = cp.codePointAt(0)!;
-  if (
-    code === 0x22 || // "
-    code === 0x5c || // \
-    code === 0x08 || // \b
-    code === 0x09 || // \t
-    code === 0x0a || // \n
-    code === 0x0c || // \f
-    code === 0x0d // \r
-  ) {
-    return 2;
-  }
-  if (code < 0x20) return 6;
-  return Buffer.byteLength(cp, "utf8");
-}
-
-/**
- * T-026 R7 / pen resolution 4: fit a persisted IndexRecord under
- * `INDEX_BYTE_BUDGET` by slicing ONLY `record.artifact`. Under-budget records
- * return unchanged (reference identity). Over budget: compute the
- * non-artifact serialized overhead ONCE (with `artifact: ""`), derive an
- * exact escaped-byte budget for the artifact, walk the artifact's code
- * points accumulating their JSON-escaped byte cost, and cut at the last code
- * point that fits -- so a surrogate pair is never split and control/multibyte
- * escaping is accounted for exactly. Slice once, verify once. Accepted
- * documented degradation: for pathological artifacts the tail is dropped, so
- * post-restart verification of findings anchored beyond the cut degrades to
- * the R6 defer/flag paths; in-memory sessions keep the full artifact.
+ * T-026 R7, amended by the codex round (pen ruling): fit a persisted
+ * IndexRecord under `INDEX_BYTE_BUDGET`, ALL-OR-NOTHING. An under-budget
+ * record returns unchanged (reference identity). An over-budget record is
+ * returned with `artifact: ""` (changedFiles and every other field intact).
+ *
+ * DESIGNED POSTURE, not a shortcut: partial enforcement against a truncated
+ * artifact prefix is worse than no enforcement, because the anchor pass
+ * would wrongly defer valid findings whose evidence lies beyond the cut --
+ * this ticket's motivating harm inverted. So whenever the artifact cannot be
+ * persisted whole, the degraded persisted copy loses enforcement ENTIRELY
+ * and HONESTLY: a restarted review rehydrates with an empty artifact and the
+ * anchor pass runs normalize-only (R10). The live pre-restart session keeps
+ * its full in-memory artifact and enforces fully. No completeness flag, no
+ * partial-prefix enforcement.
  */
 export function fitArtifactToIndexBudget(record: IndexRecord): IndexRecord {
   const full = Buffer.byteLength(JSON.stringify(record), "utf8");
   if (full <= INDEX_BYTE_BUDGET) return record;
-  const emptyOverhead = Buffer.byteLength(
-    JSON.stringify({ ...record, artifact: "" }),
-    "utf8",
-  );
-  const artifactBudget = INDEX_BYTE_BUDGET - emptyOverhead;
-  if (artifactBudget <= 0) return { ...record, artifact: "" };
-  let used = 0;
-  let cut = 0; // number of UTF-16 code units to keep
-  for (const cp of record.artifact) {
-    const cost = jsonEscapedCodePointBytes(cp);
-    if (used + cost > artifactBudget) break;
-    used += cost;
-    cut += cp.length; // 2 for an astral code point, 1 otherwise
-  }
-  const candidate = { ...record, artifact: record.artifact.slice(0, cut) };
-  // Verify once; the walk is exact, so this holds by construction. The guard
-  // falls back to an empty artifact only if an impossible miscount overshot.
-  if (
-    Buffer.byteLength(JSON.stringify(candidate), "utf8") <= INDEX_BYTE_BUDGET
-  ) {
-    return candidate;
-  }
   return { ...record, artifact: "" };
 }
 

@@ -79,8 +79,9 @@ export interface ReviewSession {
    * T-026 R11: the retained hop-1 artifact (CODE_REVIEW diff or PLAN_REVIEW
    * plan text), so the complete-time anchor pass can verify snippets with
    * zero repo access. Empty string when a pre-upgrade session rehydrated
-   * without one, or after R7 truncation loss -> the anchor pass then runs
-   * normalize-only. Cross-ticket contract with T-032; do not reshape.
+   * without one, or when the artifact was too large to persist whole (the
+   * R7 all-or-nothing drop) -> the anchor pass then runs normalize-only.
+   * Cross-ticket contract with T-032; do not reshape.
    */
   readonly artifact: string;
   /** T-026 R11: the retained hop-1 changedFiles (empty for PLAN_REVIEW). */
@@ -385,8 +386,13 @@ function persistRegistrationBestEffort(
       priorDeferrals: [...session.priorDeferrals],
       createdAt: new Date(session.startedAt).toISOString(),
       // T-026 R11: persist the retained artifact + changedFiles so the
-      // anchor pass survives a restart. R7: size-fit the artifact so the
-      // index stays under the read gate's MAX_FILE_BYTES cap.
+      // anchor pass survives a restart. R7 (codex round, designed posture):
+      // the artifact persists ALL-OR-NOTHING -- when the serialized index
+      // would exceed the byte budget, the artifact is stored EMPTY (never a
+      // truncated prefix), so a restarted review rehydrates into
+      // normalize-only mode instead of wrongly deferring valid findings
+      // whose evidence lies beyond a cut. The live in-memory session keeps
+      // the full artifact and enforces fully.
       artifact: session.artifact,
       changedFiles: [...session.changedFiles],
       cachedResults: cached,

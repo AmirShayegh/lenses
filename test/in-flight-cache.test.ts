@@ -150,6 +150,19 @@ describe("fitArtifactToIndexBudget (T-026 R7 / pen res 4)", () => {
     writeIndex(fitted);
     expect(readIndex(RID)).toBeDefined();
   });
+
+  it("drops the artifact ENTIRELY when over budget: all-or-nothing posture (codex round)", () => {
+    // Partial enforcement against a truncated prefix wrongly defers valid
+    // findings beyond the cut; the degraded persisted copy must lose
+    // enforcement entirely and honestly (empty artifact -> normalize-only).
+    const rec = makeIndex({
+      artifact: "y".repeat(MAX_FILE_BYTES + 1000),
+      changedFiles: ["src/a.ts"],
+    });
+    const fitted = fitArtifactToIndexBudget(rec);
+    expect(fitted.artifact).toBe("");
+    expect(fitted.changedFiles).toEqual(["src/a.ts"]);
+  });
 });
 
 describe("inFlightDir", () => {

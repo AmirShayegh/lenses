@@ -182,6 +182,106 @@ describe("buildNewSideIndex (R-C3 hunk bounding)", () => {
     const idx = buildNewSideIndex(diff);
     expect(idx.get("src/x.ts")!.get(2)).toBe("add");
   });
+
+  it("decodes git C-style quoted paths so index keys equal real repo paths (codex round)", () => {
+    const diff = [
+      'diff --git "a/src/with space.ts" "b/src/with space.ts"',
+      '--- "a/src/with space.ts"',
+      '+++ "b/src/with space.ts"',
+      "@@ -1,1 +1,2 @@",
+      " keep",
+      "+added",
+    ].join("\n");
+    const idx = buildNewSideIndex(diff);
+    expect(idx.has("src/with space.ts")).toBe(true);
+    expect(idx.get("src/with space.ts")!.get(2)).toBe("added");
+  });
+
+  it("decodes octal escapes (non-ASCII bytes) in quoted paths", () => {
+    // git core.quotePath=true emits UTF-8 bytes as octal: caf\303\251 is
+    // "cafe" with an accented e.
+    const diff = [
+      'diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"',
+      '--- "a/src/caf\\303\\251.ts"',
+      '+++ "b/src/caf\\303\\251.ts"',
+      "@@ -1,1 +1,2 @@",
+      " keep",
+      "+accent",
+    ].join("\n");
+    const idx = buildNewSideIndex(diff);
+    expect(idx.has("src/café.ts")).toBe(true);
+    expect(idx.get("src/café.ts")!.get(2)).toBe("accent");
+  });
+
+  it("decodes tab and quote escapes in quoted paths", () => {
+    const diff = [
+      'diff --git "a/src/tab\\there.ts" "b/src/tab\\there.ts"',
+      '--- "a/src/tab\\there.ts"',
+      '+++ "b/src/tab\\there.ts"',
+      "@@ -1,1 +1,2 @@",
+      " keep",
+      "+tabbed",
+    ].join("\n");
+    const idx = buildNewSideIndex(diff);
+    expect(idx.has("src/tab\there.ts")).toBe(true);
+
+    const diff2 = [
+      'diff --git "a/src/q\\"uote.ts" "b/src/q\\"uote.ts"',
+      '--- "a/src/q\\"uote.ts"',
+      '+++ "b/src/q\\"uote.ts"',
+      "@@ -1,1 +1,2 @@",
+      " keep",
+      "+quoted",
+    ].join("\n");
+    const idx2 = buildNewSideIndex(diff2);
+    expect(idx2.has('src/q"uote.ts')).toBe(true);
+  });
+
+  it("mixed quoted/unquoted diff --git header still confirms the prefix form", () => {
+    // git quotes each side independently; a rename to a spaced name quotes
+    // only the b-side.
+    const diff = [
+      'diff --git a/old.ts "b/new name.ts"',
+      "rename from old.ts",
+      "rename to new name.ts",
+      "--- a/old.ts",
+      '+++ "b/new name.ts"',
+      "@@ -1,1 +1,2 @@",
+      " keep",
+      "+fresh",
+    ].join("\n");
+    const idx = buildNewSideIndex(diff);
+    expect(idx.has("new name.ts")).toBe(true);
+    expect(idx.get("new name.ts")!.get(2)).toBe("fresh");
+  });
+});
+
+describe("verifyAnchors quoted-path enforcement (codex minor 3)", () => {
+  it("a finding on a quoted-path file gates against the DECODED index key (deferred, not passed through)", () => {
+    const diff = [
+      'diff --git "a/src/with space.ts" "b/src/with space.ts"',
+      '--- "a/src/with space.ts"',
+      '+++ "b/src/with space.ts"',
+      "@@ -1,1 +1,2 @@",
+      " keep",
+      "+added",
+    ].join("\n");
+    const f = finding({
+      id: "q",
+      severity: "minor",
+      file: "src/with space.ts",
+      line: 2,
+      snippet: { quote: "not present anywhere", startLine: 2 },
+    });
+    const res = run([ok("security", [f])], {
+      stage: "CODE_REVIEW",
+      artifact: diff,
+      changedFiles: ["src/with space.ts"],
+    });
+    expect(res.perLens[0]!.output.findings).toHaveLength(0);
+    expect(res.deferred).toHaveLength(1);
+    expect(res.deferred[0]!.reason).toBe("evidence_unverified");
+  });
 });
 
 describe("sanitizeFindingForStorage (R-C2 / R-D4b)", () => {
