@@ -1,11 +1,13 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  readIndex,
   readTask,
+  writeIndex,
   _failNextIndexRmwForTests,
   _failNextTaskWriteForTests,
 } from "../src/cache/in-flight.js";
@@ -169,6 +171,41 @@ describe("T-027 prompt-fetch anchoring", () => {
     expect(getReview(reviewId)?.perLensExpiresAt.get("security")).toBe(
       Date.parse(gp1.expiresAt!),
     );
+  });
+
+  // Codex round 3: the anchor decision is serialized under the review
+  // lock and the guard is re-checked against a FRESH index read. A
+  // concurrent process that anchored between this process's hydration
+  // and its lock acquisition wins: the losing fetch adopts the
+  // persisted deadline, writes nothing, and the index is byte-unchanged.
+  it("codex round 3: a concurrently pre-anchored index guard wins; the losing fetch adopts it and writes nothing", async () => {
+    const { reviewId, hop1ExpiresAt } = await startSecurity();
+    // Simulate the concurrent winner: pre-write the guard with a
+    // DIFFERENT deadline directly into the index, after this process
+    // hydrated (the session is already in its Map without the guard).
+    const index = readIndex(reviewId);
+    if (!index) throw new Error("index missing");
+    const meta = index.lensMeta["security"];
+    if (!meta) throw new Error("lensMeta missing");
+    const otherDeadline = new Date(
+      Date.parse(hop1ExpiresAt) + 123_456,
+    ).toISOString();
+    writeIndex({
+      ...index,
+      lensMeta: {
+        ...index.lensMeta,
+        security: { ...meta, expiresAt: otherDeadline, anchoredAttempt: 1 },
+      },
+    });
+    const indexPath = join(inFlightDir, reviewId, "index.json");
+    const before = readFileSync(indexPath, "utf8");
+
+    const gp = await getPrompt(reviewId);
+    // The wire deadline equals what the index durably holds, not a
+    // fresh mint by the losing fetch.
+    expect(gp.expiresAt).toBe(otherDeadline);
+    // And the losing fetch left the index byte-unchanged.
+    expect(readFileSync(indexPath, "utf8")).toBe(before);
   });
 
   it("R8: a fetch after the deadline returns the prompt but leaves the old deadline intact", async () => {

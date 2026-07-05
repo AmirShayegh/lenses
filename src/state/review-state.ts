@@ -46,6 +46,7 @@ import {
 } from "../cache/in-flight.js";
 import { resolveLensTimeoutMs } from "../lenses/registry.js";
 import type { LensId } from "../lenses/prompts/index.js";
+import { withReviewStateLock } from "./review-lock.js";
 import { ReviewVerdictSchema } from "../schema/index.js";
 import type {
   DeferralKey,
@@ -869,6 +870,18 @@ export function commitReviewCompletion(params: {
  * its failure is harmless and is retried on a later fetch without
  * touching the deadline. The in-memory anchored set only fast-paths
  * repeated calls within the process.
+ *
+ * Cross-process serialization (codex round 3): the anchor decision runs
+ * inside `withReviewStateLock`, and INSIDE the lock the guard is
+ * re-checked against a FRESH index read (not the hydrated session). If
+ * a concurrent process anchored between this process's hydration and
+ * its lock acquisition, the losing fetch writes NOTHING: it adopts the
+ * persisted deadline into memory and returns exactly that. Either way
+ * the returned deadline equals what the index durably holds at lock
+ * release. When the lock store is broken, `withReviewStateLock` runs
+ * the callback unlocked (round-1 degraded posture) and the cross-
+ * process race window persists by design -- documented best-effort
+ * degradation, no second mechanism.
  */
 export function anchorLensDeadlineOnFetch(
   reviewId: string,
@@ -884,8 +897,8 @@ export function anchorLensDeadlineOnFetch(
     return getReview(reviewId)?.perLensExpiresAt.get(lensId);
   }
 
-  // Codex round 2: the durable once-guard. If the index says attempt 1
-  // already anchored (this process or a previous one), never extend
+  // Codex round 2: the durable once-guard, hydrated-memory fast path.
+  // If this process already knows attempt 1 anchored, never extend
   // again; just retry the bookkeeping seed flip if it was lost and
   // return the current (anchored or retry-minted) deadline.
   if (session.perLensAnchoredAttempt.get(lensId) !== undefined) {
@@ -901,6 +914,65 @@ export function anchorLensDeadlineOnFetch(
     return current;
   }
   if (current === undefined || now > current) return current;
+
+  // Codex round 3: serialize the anchor decision + conditional write
+  // under the per-review lock. A lock timeout (genuinely held past the
+  // deadline) must not turn a prompt fetch into an error: fall back to
+  // the pre-existing deadline; a later fetch retries the anchor.
+  try {
+    return withReviewStateLock(reviewId, () =>
+      anchorUnderLock(reviewId, lensId, now, key),
+    );
+  } catch (err) {
+    logSwallow(`anchor lock(${lensId})`, err);
+    return current;
+  }
+}
+
+/**
+ * T-027 codex round 3: the locked half of the anchor. MUST be called
+ * with `withReviewStateLock(reviewId, ...)` held (or in its documented
+ * run-unlocked degraded posture). Re-checks the guard against a FRESH
+ * index read and either adopts the concurrently persisted deadline
+ * (write nothing) or performs the atomic guard+deadline RMW; on both
+ * branches the returned deadline is exactly what the index durably
+ * holds at lock release.
+ */
+function anchorUnderLock(
+  reviewId: string,
+  lensId: LensId,
+  now: number,
+  key: string,
+): number | undefined {
+  const session = getReview(reviewId);
+  if (!session) return undefined;
+  const current = session.perLensExpiresAt.get(lensId);
+
+  // Conditional write (codex round 3): the authoritative guard check
+  // reads the INDEX fresh, not the hydrated session. `readIndex` never
+  // throws (unreadable index reads as undefined = memory-only path).
+  const freshMeta = readIndex(reviewId)?.lensMeta[lensId];
+  if (freshMeta?.anchoredAttempt !== undefined) {
+    // Lost the cross-process race: a concurrent first fetch anchored
+    // between this process's hydration and its lock acquisition. Write
+    // NOTHING; adopt the persisted deadline + guard into memory and
+    // return exactly the durable value.
+    const persistedMs = Date.parse(freshMeta.expiresAt);
+    const adoptedMs = Number.isFinite(persistedMs) ? persistedMs : current;
+    const nextExpires = new Map(session.perLensExpiresAt);
+    if (adoptedMs !== undefined) nextExpires.set(lensId, adoptedMs);
+    anchoredLenses.add(key);
+    touchLru(reviewId, {
+      ...session,
+      perLensExpiresAt: nextExpires,
+      perLensAnchoredAttempt: new Map(session.perLensAnchoredAttempt).set(
+        lensId,
+        freshMeta.anchoredAttempt,
+      ),
+    });
+    completeSeedFlipBestEffort(reviewId, lensId, adoptedMs);
+    return adoptedMs;
+  }
 
   let seed: TaskRecord | undefined;
   try {
