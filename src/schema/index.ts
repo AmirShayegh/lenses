@@ -14,9 +14,14 @@ export {
 } from "./finding.js";
 
 export {
+  COVERED_STATUSES,
+  LensCoverageEntrySchema,
+  LensCoverageStatusSchema,
   ReviewVerdictSchema,
   TensionSchema,
   VerdictSchema,
+  type LensCoverageEntry,
+  type LensCoverageStatus,
   type ReviewVerdict,
   type Tension,
   type Verdict,

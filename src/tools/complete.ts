@@ -22,6 +22,7 @@ import {
   DEFAULT_MAX_ATTEMPTS,
   ReviewVerdictSchema,
   type CompleteParams,
+  type LensCoverageEntry,
   type LensErrorCode,
   type LensOutput,
   type NextAction,
@@ -30,9 +31,13 @@ import {
   type ReviewVerdict,
   type ZodIssueWire,
 } from "../schema/index.js";
+import { withReviewStateLock } from "../state/review-lock.js";
 import {
   applyCompletion,
-  persistInFlightBestEffort,
+  buildLensCoverage,
+  commitReviewCompletion,
+  mintRetryDeadline,
+  PersistenceFailedError,
   rejectionToLensErrorCode,
   type ReviewSession,
   type SubmittedResult,
@@ -49,9 +54,16 @@ export const LENS_REVIEW_COMPLETE_NAME = "lens_review_complete";
 export const lensReviewCompleteDefinition = {
   name: LENS_REVIEW_COMPLETE_NAME,
   description:
-    "Finish a multi-lens review. Accepts the raw outputs from each spawned agent; " +
-    "returns the merged, confidence-filtered verdict. Hop 2 of 2 " +
-    "(or hop 2+ of N if the prior call emitted nextActions[] for retry).",
+    "Finish or advance a multi-lens review. Accepts the raw outputs from each " +
+    "spawned agent, incrementally (partial batches and empty polls are fine); " +
+    "returns the merged, confidence-filtered verdict envelope. The envelope " +
+    "disclosures matter: reviewComplete=false marks an INTERIM envelope (the " +
+    "review stays open; resubmit or poll again), lensCoverage[]/coverage/" +
+    "errorCodes disclose per-lens outcomes including expired (timed-out) " +
+    "lenses, and nextActions[] carries retry instructions with a FRESH " +
+    "per-attempt deadline (each retry gets its full timeout budget from " +
+    "emission time; a late result diverts that lens to expired coverage " +
+    "instead of rejecting the call). Hop 2+ of N.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -97,6 +109,10 @@ function errorResult(message: string): CallToolResult {
  * callers that just want to display the error see a structured
  * diagnostic string.
  *
+ * T-027 (pen resolution 8): `extra` carries additive sibling fields
+ * (e.g. `storedVerdict` on a DUPLICATE_COMPLETE replay). The message
+ * string itself never changes shape for existing codes.
+ *
  * Argument-validation errors (Zod parse failures on `CompleteParams`)
  * stay plain text -- those are "your request is malformed" and don't
  * need a code; the Zod message already describes the issue.
@@ -104,13 +120,14 @@ function errorResult(message: string): CallToolResult {
 function errorResultWithCode(
   code: LensErrorCode,
   message: string,
+  extra: Record<string, unknown> = {},
 ): CallToolResult {
   return {
     isError: true,
     content: [
       {
         type: "text",
-        text: JSON.stringify({ errorCode: code, message }),
+        text: JSON.stringify({ errorCode: code, message, ...extra }),
       },
     ],
   };
@@ -150,10 +167,48 @@ function classifyPhase(err: z.ZodError): ParseErrorPhase {
 }
 
 /**
+ * T-027 R-D3: paranoid tie between lensCoverage and expectedLensIds,
+ * asserted immediately before verdict emission. The disclosure must be
+ * EXACTLY the expected lens set: no duplicate, no missing, no extra
+ * entry. A violation is a server-side invariant break (buildLensCoverage
+ * ranges over expectedLensIds, so this should be unreachable) and
+ * surfaces as an internal error rather than shipping an envelope whose
+ * coverage story silently omits a lens.
+ */
+export function assertLensCoverageExactSet(
+  expectedLensIds: readonly string[],
+  lensCoverage: readonly LensCoverageEntry[],
+): void {
+  const seen = new Set<string>();
+  for (const entry of lensCoverage) {
+    if (seen.has(entry.lensId)) {
+      throw new Error(
+        `lens coverage invariant: duplicate lensCoverage entry for '${entry.lensId}'`,
+      );
+    }
+    seen.add(entry.lensId);
+  }
+  const expected = new Set(expectedLensIds);
+  const missing = expectedLensIds.filter((id) => !seen.has(id));
+  const extra = [...seen].filter((id) => !expected.has(id));
+  if (missing.length > 0 || extra.length > 0) {
+    throw new Error(
+      `lens coverage invariant: lensCoverage must equal the expected lens set exactly` +
+        (missing.length > 0 ? ` (missing: ${missing.join(", ")})` : "") +
+        (extra.length > 0 ? ` (extra: ${extra.join(", ")})` : ""),
+    );
+  }
+}
+
+/**
  * Persist round summary to the disk session cache. Best-effort per
  * RULES.md §4: any error is logged but never propagated. Runs OUTSIDE
  * the outer try/catch in `handleLensReviewComplete` so a disk error
  * cannot flip `isError: true`.
+ *
+ * T-027 R3: called ONLY for TERMINAL envelopes (reviewComplete=true).
+ * Interim envelopes persist zero round records, so a multi-step
+ * incremental review leaves exactly one RoundRecord.
  */
 function persistRoundBestEffort(
   session: ReviewSession,
@@ -262,14 +317,17 @@ function buildNextActions(
     if (c.latestAttempt >= maxAttempts) continue;
     const prompt = session.prompts.get(c.lensId);
     if (prompt === undefined) continue; // cached lens has no prompt; never retries
-    // Any spawned lens has a matching expiresAt registered at hop-1
-    // (see `start.ts`), so an undefined lookup here is a server-side
-    // invariant break, not an expected path. Skip rather than silently
-    // manufacture a synthetic deadline that has no relationship to the
-    // caller's `lensTimeout` config.
-    const expiresMs = session.perLensExpiresAt.get(c.lensId);
-    if (expiresMs === undefined) continue;
-    const expiresAt = new Date(expiresMs).toISOString();
+    // T-027 R8: mint a FRESH deadline at NextAction emission time. The
+    // retry attempt gets the lens's full timeout budget from now,
+    // replacing the pre-T-027 reuse of the hop-1 deadline (DEFECT 1:
+    // a retry could otherwise inherit an already-lapsed window). The
+    // mint re-anchors server-side and persists to index.lensMeta, so
+    // the emitted expiresAt is exactly the enforced one. A lens with
+    // no registered deadline is skipped, matching pre-T-027 behavior
+    // (such a lens never expires; there is no deadline to refresh).
+    const mintedMs = mintRetryDeadline(session.reviewId, c.lensId);
+    if (mintedMs === undefined) continue;
+    const expiresAt = new Date(mintedMs).toISOString();
     const retryPrompt = `${prompt}\n\n<retry-context>Prior attempt ${c.latestAttempt} failed validation: ${c.reason}. Return only valid JSON matching the lens output schema.</retry-context>\n`;
     out.push({
       lensId: c.lensId,
@@ -280,6 +338,16 @@ function buildNextActions(
   }
   return out;
 }
+
+/** Result of the locked finalization transaction. */
+type LockedOutcome =
+  | { readonly kind: "error"; readonly result: CallToolResult }
+  | {
+      readonly kind: "envelope";
+      readonly session: ReviewSession;
+      readonly safe: ReviewVerdict;
+      readonly finalizing: boolean;
+    };
 
 export async function handleLensReviewComplete(
   req: CallToolRequest,
@@ -299,25 +367,19 @@ export async function handleLensReviewComplete(
     return errorResult(`lens_review_complete: unknown error`);
   }
 
-  let session: ReviewSession;
-  let safe: ReviewVerdict;
-  let perLens: LensRunResult[];
-  // Hoist `submissions` so `persistInFlightBestEffort` can read them
-  // AFTER the outer try/catch closes -- mirrors the `persistRoundBestEffort`
-  // / `persistLensCacheBestEffort` pattern. A disk-write failure inside
-  // the helper cannot flip `isError: true` because the helper runs
-  // outside the try/catch.
-  const submissions: SubmittedResult[] = [];
+  let outcome: LockedOutcome;
   const agentSubmittedLensIds = new Set<LensId>();
   try {
     // First pass: classify each submitted result -- does it parse as a
     // clean LensOutput, or does it produce a parseError we should
-    // surface? We do NOT advance the state machine until we know the
-    // shape of each submission; applyCompletion needs the LensOutput
-    // object (including syntheticError placeholders for hard-failed
-    // lenses) to store the latest view.
+    // surface? Pure parsing; no state machine access, so it stays
+    // outside the lock. T-027 R-D2: NO lens-id pre-filtering happens
+    // here beyond the "is this a real lens at all" gate --
+    // valid-but-unactivated lenses flow into applyCompletion and come
+    // back in `disposition.ignoredLensIds`.
     const parseErrors: ParseError[] = [];
     const retryCandidates: RetryCandidate[] = [];
+    const submissions: SubmittedResult[] = [];
     const maxAttempts =
       parsed.mergerConfig?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
 
@@ -387,72 +449,141 @@ export async function handleLensReviewComplete(
       }
     }
 
-    // Decide finalize: true ONLY when no retry candidates have budget
-    // remaining. If any lens can still retry, we keep the session open.
-    const willEmitRetries = retryCandidates.some(
-      (c) => c.latestAttempt < maxAttempts,
-    );
+    // T-027 (pen resolutions 1 + 3): EXACTLY ONE lock acquisition
+    // around the whole finalization transaction -- disposition
+    // planning, retry emission, every derived envelope decision, and
+    // the completion commit. `applyCompletion` and
+    // `commitReviewCompletion` do not lock internally (their doc
+    // contracts require the caller to hold this lock); nothing inside
+    // the callback re-enters the lock.
+    outcome = withReviewStateLock(parsed.reviewId, (): LockedOutcome => {
+      const applied = applyCompletion({
+        reviewId: parsed.reviewId,
+        results: submissions,
+        finalize: false,
+      });
+      if (!applied.ok) {
+        // State-machine rejection: wrap the message with the structured
+        // LensErrorCode so callers can programmatically distinguish
+        // DUPLICATE_COMPLETE from generic rejections. Pen resolution 8:
+        // an already_complete replay additionally carries the stored
+        // verdict as a SIBLING field; the message string is unchanged.
+        const extra =
+          applied.code === "already_complete" &&
+          applied.storedVerdict !== undefined
+            ? { storedVerdict: applied.storedVerdict }
+            : {};
+        return {
+          kind: "error",
+          result: errorResultWithCode(
+            rejectionToLensErrorCode(applied.code),
+            `lens_review_complete: ${applied.message}`,
+            extra,
+          ),
+        };
+      }
 
-    const applied = applyCompletion({
-      reviewId: parsed.reviewId,
-      results: submissions,
-      finalize: !willEmitRetries,
+      const session = applied.session;
+      const disposition = applied.disposition;
+
+      // T-027 R4: expired lenses produce NO retry instructions and NO
+      // parseErrors entries -- their disclosure is the expired coverage
+      // status. R-B3: ignored (unactivated) lenses produce no retries
+      // either. The committed disposition is the only source consulted
+      // (pen resolution 3).
+      const ignored = new Set<LensId>(disposition.ignoredLensIds);
+      const effectiveCandidates = retryCandidates.filter(
+        (c) => !session.perLensExpired.has(c.lensId) && !ignored.has(c.lensId),
+      );
+      const effectiveParseErrors = parseErrors.filter(
+        (p) => !session.perLensExpired.has(p.lensId as LensId),
+      );
+
+      // Mints fresh per-attempt deadlines (R8); mutates the in-memory
+      // session's perLensExpiresAt, which is why it must stay inside
+      // the lock.
+      const nextActions = buildNextActions(
+        session,
+        effectiveCandidates,
+        maxAttempts,
+      );
+
+      // Finalize iff nothing is retryable AND the union coverage
+      // (accepted + prior outputs + cached + expired, R14a) spans every
+      // expected lens. Otherwise this call returns an INTERIM envelope
+      // and the review stays open.
+      const finalizing =
+        nextActions.length === 0 && disposition.unionCovered;
+
+      // Build the full per-lens view the merger sees:
+      //   - latest successfully-parsed outputs (from session.perLensLatestOutput).
+      //   - cached outputs (from session.cachedResults, re-inflated as ok).
+      const perLens: LensRunResult[] = [];
+      for (const [lensId, out] of session.perLensLatestOutput) {
+        perLens.push({ lensId, output: out });
+      }
+      for (const [lensId, cached] of session.cachedResults) {
+        if (session.perLensLatestOutput.has(lensId)) continue; // fresh wins
+        perLens.push({
+          lensId,
+          output: {
+            status: "ok",
+            findings: [...cached.findings],
+            error: null,
+            notes: cached.notes,
+          },
+        });
+      }
+
+      // T-027 R14: the coverage disclosure, exact-set-checked against
+      // expectedLensIds (R-D3) before the envelope ships.
+      const lensCoverage = buildLensCoverage(session);
+      assertLensCoverageExactSet(session.expectedLensIds, lensCoverage);
+
+      const verdict = runMergerPipeline(
+        parsed.mergerConfig === undefined
+          ? {
+              reviewId: parsed.reviewId,
+              sessionId: session.sessionId,
+              perLens,
+              parseErrors: effectiveParseErrors,
+              nextActions,
+              lensCoverage,
+              reviewComplete: finalizing,
+            }
+          : {
+              reviewId: parsed.reviewId,
+              sessionId: session.sessionId,
+              perLens,
+              mergerConfig: parsed.mergerConfig,
+              parseErrors: effectiveParseErrors,
+              nextActions,
+              lensCoverage,
+              reviewComplete: finalizing,
+            },
+      );
+
+      const safe = ReviewVerdictSchema.parse(verdict);
+
+      // T-027 (pen resolutions 2 + 5): the ONLY complete transition on
+      // the tool path. Validates the final verdict and durably writes
+      // completedAt + verdict BEFORE flipping the in-memory status. A
+      // PersistenceFailedError propagates to the handler catch, which
+      // returns the PERSISTENCE_FAILED envelope; the session stays
+      // awaiting_retry and the finalizing call can simply be retried.
+      if (finalizing) {
+        commitReviewCompletion({ reviewId: parsed.reviewId, verdict: safe });
+      }
+
+      return { kind: "envelope", session, safe, finalizing };
     });
-    if (!applied.ok) {
-      // State-machine rejection: wrap the message with the structured
-      // LensErrorCode so callers can programmatically distinguish
-      // REVIEW_EXPIRED / DUPLICATE_COMPLETE from generic rejections.
+  } catch (err) {
+    if (err instanceof PersistenceFailedError) {
       return errorResultWithCode(
-        rejectionToLensErrorCode(applied.code),
-        `lens_review_complete: ${applied.message}`,
+        "PERSISTENCE_FAILED",
+        `lens_review_complete: ${err.message}`,
       );
     }
-
-    session = applied.session;
-
-    // Build the full per-lens view the merger sees:
-    //   - latest successfully-parsed outputs (from session.perLensLatestOutput).
-    //   - cached outputs (from session.cachedResults, re-inflated as ok).
-    perLens = [];
-    for (const [lensId, out] of session.perLensLatestOutput) {
-      perLens.push({ lensId, output: out });
-    }
-    for (const [lensId, cached] of session.cachedResults) {
-      if (session.perLensLatestOutput.has(lensId)) continue; // fresh wins
-      perLens.push({
-        lensId,
-        output: {
-          status: "ok",
-          findings: [...cached.findings],
-          error: null,
-          notes: cached.notes,
-        },
-      });
-    }
-
-    const nextActions = buildNextActions(session, retryCandidates, maxAttempts);
-
-    const verdict = runMergerPipeline(
-      parsed.mergerConfig === undefined
-        ? {
-            reviewId: parsed.reviewId,
-            sessionId: session.sessionId,
-            perLens,
-            parseErrors,
-            nextActions,
-          }
-        : {
-            reviewId: parsed.reviewId,
-            sessionId: session.sessionId,
-            perLens,
-            mergerConfig: parsed.mergerConfig,
-            parseErrors,
-            nextActions,
-          },
-    );
-
-    safe = ReviewVerdictSchema.parse(verdict);
-  } catch (err) {
     if (err instanceof z.ZodError) {
       return errorResult(
         `lens_review_complete: internal error: ${summarizeZod(err)}`,
@@ -464,13 +595,25 @@ export async function handleLensReviewComplete(
     return errorResult(`lens_review_complete: unknown error`);
   }
 
-  persistRoundBestEffort(session, safe);
-  persistLensCacheBestEffort(session, perLens, agentSubmittedLensIds);
-  // T-024: persist per-(reviewId, lensId, attempt) task records so a
-  // server restart between hops can rebuild `perLensLatestOutput` from
-  // disk on the next `getReview` call. Runs outside the outer try/catch
-  // so a disk failure never flips `isError: true` (RULES.md §4).
-  persistInFlightBestEffort(session, submissions);
+  if (outcome.kind === "error") return outcome.result;
 
-  return { content: [{ type: "text", text: JSON.stringify(safe) }] };
+  // T-027 R3: round records are TERMINAL-only. Lens cache writes stay
+  // per-call (they key on promptHash and only ever see ok outputs that
+  // were actually accepted into perLensLatestOutput). Both run outside
+  // the try/catch so a disk failure never flips `isError: true`
+  // (RULES.md §4). Task-record persistence happens inside
+  // `applyCompletion` now; the old post-hoc call site is gone.
+  if (outcome.finalizing) {
+    persistRoundBestEffort(outcome.session, outcome.safe);
+  }
+  persistLensCacheBestEffort(
+    outcome.session,
+    [...outcome.session.perLensLatestOutput].map(([lensId, output]) => ({
+      lensId,
+      output,
+    })),
+    agentSubmittedLensIds,
+  );
+
+  return { content: [{ type: "text", text: JSON.stringify(outcome.safe) }] };
 }

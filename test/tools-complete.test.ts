@@ -419,15 +419,17 @@ describe("handleLensReviewComplete -- T-024 restart recovery", () => {
     expect(verdict.hadAnyFindings).toBe(true);
   });
 
-  it("disk write failure during the submit cycle does not turn the review into isError", async () => {
+  // T-027 (pen resolution 6): the strict durability contract changes
+  // this test's outcome deliberately. A FINALIZING call on a broken
+  // in-flight dir is an IO failure on the completion write and now
+  // returns the PERSISTENCE_FAILED error envelope; the session stays
+  // awaiting_retry and finalizes cleanly once the disk is healthy.
+  it("disk write failure during a FINALIZING call returns PERSISTENCE_FAILED and stays re-completable", async () => {
     const { reviewId, lensIds } = await startPlanReview({
       lensConfig: { lenses: ["security", "clean-code"] },
     });
-    // Point the in-flight dir at a non-directory path so the next
-    // writeTask call throws. persistInFlightBestEffort runs outside
-    // the outer try/catch, so the verdict still arrives.
     const original = process.env.LENSES_IN_FLIGHT_DIR;
-    const badPath = join(sessionDir, "not-a-dir");
+    const badPath = join(sessionDir, "not-a-dir-finalizing");
     // Create a FILE at that path so mkdirSync(badPath, recursive) fails.
     writeFileSync(badPath, "x");
     process.env.LENSES_IN_FLIGHT_DIR = badPath;
@@ -436,10 +438,48 @@ describe("handleLensReviewComplete -- T-024 restart recovery", () => {
         lensId: id,
         output: ok([]),
       }));
-      const { isError, body } = await callComplete({ reviewId, results });
+      const { isError, text } = await callComplete({ reviewId, results });
+      expect(isError).toBe(true);
+      const body = JSON.parse(text) as { errorCode: string; message: string };
+      expect(body.errorCode).toBe("PERSISTENCE_FAILED");
+    } finally {
+      if (original === undefined) {
+        delete process.env.LENSES_IN_FLIGHT_DIR;
+      } else {
+        process.env.LENSES_IN_FLIGHT_DIR = original;
+      }
+    }
+    // Disk healthy again: an empty poll finalizes from the retained
+    // outputs -- no DUPLICATE_COMPLETE, no lost review.
+    const retry = await callComplete({ reviewId, results: [] });
+    expect(retry.isError).toBe(false);
+    const verdict = ReviewVerdictSchema.parse(retry.body);
+    expect(verdict.verdict).toBe("approve");
+    expect(verdict.reviewComplete).toBe(true);
+  });
+
+  // T-027 (pen resolution 6, companion): an INTERIM (non-finalizing)
+  // call on the same broken dir still takes the best-effort graceful
+  // path: persistence failures are swallowed, no isError.
+  it("disk write failure during an INTERIM call keeps the graceful best-effort path", async () => {
+    const { reviewId, lensIds } = await startPlanReview({
+      lensConfig: { lenses: ["security", "clean-code"] },
+    });
+    const original = process.env.LENSES_IN_FLIGHT_DIR;
+    const badPath = join(sessionDir, "not-a-dir-interim");
+    writeFileSync(badPath, "x");
+    process.env.LENSES_IN_FLIGHT_DIR = badPath;
+    try {
+      // Submit only ONE of the two lenses: union coverage is incomplete,
+      // so this is an interim envelope, not a finalize.
+      const { isError, body } = await callComplete({
+        reviewId,
+        results: [{ lensId: lensIds[0]!, output: ok([]) }],
+      });
       expect(isError).toBe(false);
       const verdict = ReviewVerdictSchema.parse(body);
-      expect(verdict.verdict).toBe("approve");
+      expect(verdict.reviewComplete).toBe(false);
+      expect(verdict.coverage).toBe("partial");
     } finally {
       if (original === undefined) {
         delete process.env.LENSES_IN_FLIGHT_DIR;
@@ -451,15 +491,15 @@ describe("handleLensReviewComplete -- T-024 restart recovery", () => {
 });
 
 /**
- * T-022/T-024 ISS-004: past-`expiresAt` rejection carries the
- * REVIEW_EXPIRED LensErrorCode and fires at the tool boundary (not
- * just the unit-tested state-machine layer).
+ * T-027 R1/R11: a past-`expiresAt` submission is no longer an isError
+ * rejection. The expired lens is diverted to `expired` coverage, the
+ * review finalizes, and the envelope discloses the partial coverage
+ * (revise via the core-coverage cap, PARTIAL_RESULTS, lensCoverage).
  */
-describe("handleLensReviewComplete -- T-022 expiresAt rejection", () => {
-  it("submission past expiresAt returns isError with errorCode=REVIEW_EXPIRED", async () => {
+describe("handleLensReviewComplete -- T-027 expiresAt disclosure", () => {
+  it("submission past expiresAt returns a normal final envelope with expired coverage", async () => {
     // lensTimeout: 1 ms -> expiresAt is in the past by the time we
-    // call hop-2. Submission is rejected by the state machine with
-    // `review_expired`, which maps to REVIEW_EXPIRED on the wire.
+    // call hop-2. The would-be-accepted result is diverted to expired.
     const startResult = await handleLensReviewStart({
       method: "tools/call",
       params: {
@@ -482,17 +522,20 @@ describe("handleLensReviewComplete -- T-022 expiresAt rejection", () => {
     // Ensure the 1 ms deadline has elapsed.
     await new Promise((r) => setTimeout(r, 5));
 
-    const { isError, text } = await callComplete({
+    const { isError, body } = await callComplete({
       reviewId: parsed.reviewId,
       results: [{ lensId: parsed.agents[0]!.id, output: ok() }],
     });
-    expect(isError).toBe(true);
-    const body = JSON.parse(text) as {
-      errorCode: string;
-      message: string;
-    };
-    expect(body.errorCode).toBe("REVIEW_EXPIRED");
-    expect(body.message).toContain("REVIEW_EXPIRED");
+    expect(isError).toBe(false);
+    const verdict = ReviewVerdictSchema.parse(body);
+    // security is a core lens: approve is impossible with it expired.
+    expect(verdict.verdict).toBe("revise");
+    expect(verdict.coverage).toBe("partial");
+    expect(verdict.errorCodes).toEqual(["PARTIAL_RESULTS"]);
+    expect(verdict.reviewComplete).toBe(true);
+    expect(verdict.lensCoverage).toHaveLength(1);
+    expect(verdict.lensCoverage[0]?.lensId).toBe("security");
+    expect(verdict.lensCoverage[0]?.status).toBe("expired");
   });
 });
 
@@ -516,18 +559,27 @@ describe("handleLensReviewComplete -- state machine integration", () => {
     );
   });
 
-  it("missing-lenses submission produces the 'missing expected lens result(s)' error", async () => {
+  // T-027 R11/R14(a): the started-state missing_lenses gate is gone.
+  // A partial first submission is accepted as an INTERIM envelope
+  // (reviewComplete=false); the finalize-time union check remains the
+  // only completeness guard.
+  it("missing-lenses submission returns an interim envelope, not an error", async () => {
     const { reviewId, lensIds } = await startPlanReview({
       lensConfig: { lenses: ["security", "clean-code"] },
     });
     const onlyFirst = lensIds.slice(0, 1);
-    const { isError, text } = await callComplete({
+    const { isError, body } = await callComplete({
       reviewId,
       results: onlyFirst.map((id) => ({ lensId: id, output: ok() })),
     });
-    expect(isError).toBe(true);
-    expect(text).toContain("lens_review_complete: review state: submission missing 1 expected lens result(s):");
-    expect(text).toContain(lensIds[1]!);
+    expect(isError).toBe(false);
+    const verdict = ReviewVerdictSchema.parse(body);
+    expect(verdict.reviewComplete).toBe(false);
+    expect(verdict.errorCodes).toEqual([]);
+    expect(verdict.coverage).toBe("partial");
+    expect(
+      verdict.lensCoverage.find((e) => e.lensId === lensIds[1])?.status,
+    ).toBe("skipped");
   });
 
   it("double-complete returns already_complete on the second call", async () => {
@@ -1347,7 +1399,9 @@ describe("handleLensReviewComplete -- T-015 per-lens cache (§8c)", () => {
     expect(isError).toBe(false);
   });
 
-  it("§8c-10: omitting a non-cached lens still returns missing_lenses", async () => {
+  // T-027 R11: omitting a non-cached lens is no longer an error; the
+  // call returns an interim envelope with cached + skipped coverage.
+  it("§8c-10: omitting a non-cached lens returns an interim envelope with cached + skipped coverage", async () => {
     const args = {
       lensConfig: { lenses: ["security", "clean-code"] as string[] },
     };
@@ -1396,13 +1450,20 @@ describe("handleLensReviewComplete -- T-015 per-lens cache (§8c)", () => {
     };
     expect(r2Body.cached.map((c) => c.id)).toEqual(["security"]);
     expect(r2Body.agents.map((a) => a.id)).toEqual(["clean-code"]);
-    const { isError, text } = await callComplete({
+    const { isError, body } = await callComplete({
       reviewId: r2Body.reviewId,
       results: [],
     });
-    expect(isError).toBe(true);
-    expect(text).toContain("missing 1 expected lens result(s)");
-    expect(text).toContain("clean-code");
+    expect(isError).toBe(false);
+    const verdict = ReviewVerdictSchema.parse(body);
+    expect(verdict.reviewComplete).toBe(false);
+    expect(verdict.coverage).toBe("partial");
+    expect(
+      verdict.lensCoverage.find((e) => e.lensId === "security")?.status,
+    ).toBe("cached");
+    expect(
+      verdict.lensCoverage.find((e) => e.lensId === "clean-code")?.status,
+    ).toBe("skipped");
   });
 
   it("§8c-11: hop-2 does NOT re-write the cache file of a lens returned as cached in hop-1 (mtime unchanged)", async () => {

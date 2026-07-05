@@ -2,6 +2,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import type { Stage } from "../schema/index.js";
+import { CORE_LENS_IDS } from "./core-lens-ids.js";
 import { LENSES, type LensId } from "./prompts/index.js";
 import {
   PERFORMANCE_GLOB_RE,
@@ -93,13 +94,21 @@ const PLAN_KIND_EXCLUSIONS: Record<PlanKind, readonly LensId[]> = {
 
 /**
  * Default per-model timeouts in milliseconds. Opus lenses (security,
- * concurrency) get 2x the default budget because they reason slower. T-022
- * sets `agents[].expiresAt = now() + resolveLensTimeoutMs(model, config)`
- * at hop-1 and rejects hop-2 resubmissions past that wall-clock deadline.
+ * concurrency) get 2x the default budget because they reason slower.
+ *
+ * T-027 R14(f): sized for real subagent latencies (minutes, not
+ * seconds) because the CALLER does the spawning. The deadline contract
+ * is two-tier (R-D4): `agents[].expiresAt` from `lens_review_start` is
+ * the pre-fetch PROVISIONAL deadline; the `expiresAt` returned by
+ * `lens_review_get_prompt` (anchored once at the attempt-1 fetch) is
+ * the AUTHORITATIVE spawn deadline, and retry `nextActions[]` mint a
+ * fresh deadline at emission. A submission past a lens's deadline is
+ * no longer rejected at hop-2: the lens is diverted to `expired`
+ * coverage and the verdict discloses partial coverage.
  */
 export const DEFAULT_LENS_TIMEOUT_MS = {
-  default: 60_000,
-  opus: 120_000,
+  default: 600_000,
+  opus: 1_200_000,
 } as const;
 
 /**
@@ -142,11 +151,18 @@ interface Surface {
 
 export type SurfaceRule = Surface | "core" | "test-quality-dual-mode";
 
+/**
+ * T-027 R10: the four "core" entries are BUILT from `CORE_LENS_IDS`
+ * (the single-source leaf module) so a selection-logic change can
+ * never desync the registry's core set from the verdict schema's
+ * core-coverage cap.
+ */
+const CORE_SURFACE_ENTRIES = Object.fromEntries(
+  CORE_LENS_IDS.map((id) => [id, "core" as const]),
+) as Record<(typeof CORE_LENS_IDS)[number], SurfaceRule>;
+
 export const SURFACE_RULES: Record<LensId, SurfaceRule> = {
-  security: "core",
-  "error-handling": "core",
-  "clean-code": "core",
-  concurrency: "core",
+  ...CORE_SURFACE_ENTRIES,
   performance: {
     extensions: [
       ".ts",

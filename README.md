@@ -16,9 +16,9 @@ claude mcp add lenses -s user -- lenses --mcp
 
 After registration, three tools become available in your Claude Code session:
 
-- `lens_review_start` — Returns `{reviewId, agents: [{id, model, promptHash, expiresAt}], cached}`. Refs-not-prompts shape keeps the hop-1 payload small; fetch the actual prompt for each agent via `lens_review_get_prompt` before spawning.
-- `lens_review_get_prompt` — Looks up the full prompt for one lens in an active review. Stateless per `(reviewId, lensId)`.
-- `lens_review_complete` — Accepts the subagent outputs (with optional `attempt` for retry) and returns the merged verdict. The envelope includes `parseErrors[]`, `deferred[]`, `suppressedFindingCount`, `hadAnyFindings`, and `nextActions[]` for the cooperative retry protocol.
+- `lens_review_start` -- Returns `{reviewId, agents: [{id, model, promptHash, expiresAt}], cached}`. Refs-not-prompts shape keeps the hop-1 payload small; fetch the actual prompt for each agent via `lens_review_get_prompt` before spawning. The `agents[].expiresAt` is provisional: the prompt fetch anchors the authoritative deadline.
+- `lens_review_get_prompt` -- Looks up the full prompt for one lens in an active review (stateless per `(reviewId, lensId)`) and returns the lens's authoritative `expiresAt`: the first attempt-1 fetch starts the lens's timeout clock, once per attempt.
+- `lens_review_complete` -- Accepts the subagent outputs (with optional `attempt` for retry) incrementally (partial batches and empty polls are fine) and returns the merged verdict. The envelope includes `parseErrors[]`, `deferred[]`, `suppressedFindingCount`, `hadAnyFindings`, `nextActions[]` for the cooperative retry protocol (each retry carries a fresh per-attempt `expiresAt`), plus the coverage disclosure: `lensCoverage[]`, `coverage` (`full`/`partial`), `errorCodes` (`PARTIAL_RESULTS` when a lens expired), and `reviewComplete` (`false` marks an interim envelope; the review is still open). A late result diverts its lens to `expired` coverage instead of rejecting the call, and an uncovered core lens caps the verdict below `approve`.
 
 ## Architecture
 

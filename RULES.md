@@ -25,11 +25,11 @@
 
 - Three tools: `lens_review_start`, `lens_review_get_prompt`, `lens_review_complete`
   - `lens_review_start` (hop 1) returns `{reviewId, agents: [{id, model, promptHash, expiresAt}], cached: [{id, findings}]}`. Refs, not prompts — keeps the hop-1 payload small.
-  - `lens_review_get_prompt` fetches the full prompt for one lens in an active review. Called once per spawned agent. Stateless per (reviewId, lensId).
-  - `lens_review_complete` (hop 2+) accepts per-lens outputs with optional `attempt` for retry. Returns a rich verdict envelope including `parseErrors[]`, `deferred[]`, `hadAnyFindings`, and `nextActions[]` for the cooperative retry protocol.
+  - `lens_review_get_prompt` fetches the full prompt for one lens in an active review. Called once per spawned agent. The prompt is stateless per (reviewId, lensId); the response also carries the lens's AUTHORITATIVE `expiresAt` (T-027: the first attempt-1 fetch anchors the deadline to fetch time plus the lens's timeout budget, once per attempt, durably; hop-1's `agents[].expiresAt` is provisional).
+  - `lens_review_complete` (hop 2+) accepts per-lens outputs with optional `attempt` for retry, incrementally: partial batches and empty polls are fine. Returns a rich verdict envelope including `parseErrors[]`, `deferred[]`, `hadAnyFindings`, `nextActions[]` (each retry carries a FRESH per-attempt `expiresAt`), and the T-027 coverage disclosure (`lensCoverage[]`, `coverage`, `errorCodes`, `reviewComplete`). A late result diverts its lens to `expired` coverage instead of rejecting the call; an expired or otherwise uncovered CORE lens caps the verdict below `approve`; `reviewComplete: false` marks an interim envelope (review still open).
 - No side effects beyond session cache files (temp directory)
 - Stateless between calls except session cache (keyed by reviewId)
-- Graceful degradation: if cache is unavailable, skip caching, don't fail
+- Graceful degradation: if cache is unavailable, skip caching, don't fail. The ONE deliberate exception (T-027): the durable completion write on a FINALIZING `lens_review_complete` call is strict; if it fails, the call returns the `PERSISTENCE_FAILED` error envelope, the review stays open, and the finalizing call can simply be retried. Interim calls keep the fully graceful path.
 
 ## 5. Verdict Logic
 

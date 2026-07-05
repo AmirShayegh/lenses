@@ -273,7 +273,11 @@ describe("applyCompletion", () => {
     expect(skip.submittedAttempt).toBe(3);
   });
 
-  it("rejects a submission past expiresAt with review_expired", () => {
+  // T-027 R1: a submission past a lens's expiresAt no longer rejects the
+  // batch. The expired lens is diverted to `expired` (output dropped,
+  // attempt advanced); every other lens's valid result is accepted, and
+  // finalize proceeds because expired lenses count as covered.
+  it("accepts the batch and diverts a past-expiresAt lens to expired (no whole-batch rejection)", () => {
     const past = Date.now() - 1000;
     register({
       perLensExpiresAt: new Map<LensId, number>([["security", past]]),
@@ -283,11 +287,14 @@ describe("applyCompletion", () => {
       results: LENSES.map((l) => ok(l)),
       finalize: true,
     });
-    expect(v.ok).toBe(false);
-    if (v.ok) throw new Error();
-    expect(v.code).toBe("review_expired");
-    if (v.code !== "review_expired") throw new Error();
-    expect(v.lensId).toBe("security");
+    expect(v.ok).toBe(true);
+    if (!v.ok) throw new Error();
+    expect(v.session.perLensExpired.has("security")).toBe(true);
+    expect(v.session.perLensLatestOutput.has("security")).toBe(false);
+    expect(v.session.perLensAttempts.get("security")).toBe(1);
+    expect(v.session.perLensLatestOutput.get("clean-code")?.status).toBe("ok");
+    expect(v.session.perLensLatestOutput.get("performance")?.status).toBe("ok");
+    expect(v.session.status).toBe("complete");
   });
 
   it("rejects a double-complete with already_complete", () => {

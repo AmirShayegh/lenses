@@ -23,6 +23,7 @@ export const LensErrorCodeSchema = z.enum([
   "MERGE_CONFLICT",
   "CONFIG_MISMATCH",
   "AGENT_TIMEOUT",
+  "PERSISTENCE_FAILED",
   "UNKNOWN_ERROR",
 ]);
 export type LensErrorCode = z.infer<typeof LensErrorCodeSchema>;
@@ -41,7 +42,7 @@ export const LENS_ERROR_MESSAGES: Record<LensErrorCode, string> = {
   DUPLICATE_COMPLETE:
     "A submission with the same (reviewId, lensId, attempt) was already accepted.",
   REVIEW_EXPIRED:
-    "Submission arrived past the lens's expiresAt deadline. Resubmit with a fresh reviewId.",
+    "The review's retained state expired; start a fresh review round.",
   REVIEW_CANCELLED: "The caller cancelled the review round.",
   PARTIAL_RESULTS:
     "One or more lenses timed out; the verdict is derived from the survivors.",
@@ -51,6 +52,8 @@ export const LENS_ERROR_MESSAGES: Record<LensErrorCode, string> = {
     "mergerConfig changed between submissions for the same reviewId; cached state was invalidated.",
   AGENT_TIMEOUT:
     "Lens exceeded its expiresAt without returning. Treat as a failed attempt.",
+  PERSISTENCE_FAILED:
+    "The durable completion write failed; the review is still open. Retry the finalizing call once the disk is healthy.",
   UNKNOWN_ERROR:
     "An unexpected error occurred while processing the submission.",
 };

@@ -113,8 +113,9 @@ export const lensReviewStartDefinition = {
   name: LENS_REVIEW_START_NAME,
   description:
     "Begin a multi-lens review. Returns a reviewId and a list of agents (each " +
-    "with promptHash + expiresAt); fetch the actual prompt for each agent via " +
-    "lens_review_get_prompt before spawning. Hop 1 of 2+.",
+    "with promptHash + a PROVISIONAL expiresAt); fetch the actual prompt for " +
+    "each agent via lens_review_get_prompt before spawning -- that fetch " +
+    "anchors and returns the lens's authoritative deadline. Hop 1 of 2+.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -191,9 +192,17 @@ function buildResponse(parsed: StartToolInput): StartToolOutput {
 
   // T-022: store the full prompt text + compute expiresAt per lens.
   // The prompt map drives `lens_review_get_prompt`; the expiresAt map
-  // drives the retry-expiry check in `lens_review_complete`.
+  // drives the per-lens expiry disposition in `lens_review_complete`.
+  //
+  // T-027 R-D4: the hop-1 expiresAt is PROVISIONAL. It becomes
+  // authoritative only if the prompt is never fetched; the first
+  // attempt-1 `lens_review_get_prompt` call re-anchors the deadline to
+  // fetch-time + the SAME per-lens timeout budget recorded here, so
+  // orchestrator think-time between hop-1 and spawn no longer burns
+  // the lens's window (DEFECT 1).
   const prompts = new Map<LensId, string>();
   const perLensExpiresAt = new Map<LensId, number>();
+  const perLensTimeoutMs = new Map<LensId, number>();
   const nowMs = Date.now();
   const wireAgents: Array<{
     id: LensId;
@@ -203,8 +212,9 @@ function buildResponse(parsed: StartToolInput): StartToolOutput {
   }> = [];
   for (const agent of spawnedAgents) {
     prompts.set(agent.lensId, agent.prompt);
-    const expiresMs =
-      nowMs + resolveLensTimeoutMs(agent.model, lensConfig);
+    const timeoutMs = resolveLensTimeoutMs(agent.model, lensConfig);
+    perLensTimeoutMs.set(agent.lensId, timeoutMs);
+    const expiresMs = nowMs + timeoutMs;
     perLensExpiresAt.set(agent.lensId, expiresMs);
     const hash = promptHashes.get(agent.lensId);
     // Invariant: every spawned agent hashed its prompt above, so `hash`
@@ -243,6 +253,10 @@ function buildResponse(parsed: StartToolInput): StartToolOutput {
     prompts,
     perLensExpiresAt,
     lensModels,
+    // T-027 R14(h): persist each lens's timeout budget so the fetch
+    // anchor and retry mint use the caller's configured value (not the
+    // model default) even after a restart.
+    perLensTimeoutMs,
   });
 
   return {

@@ -72,23 +72,25 @@ describe("LensConfigSchema.lensTimeout", () => {
 });
 
 describe("resolveLensTimeoutMs", () => {
-  it("returns the default (60s) for sonnet when config is absent", () => {
+  // T-027 R14(f): defaults raised to real subagent latencies (minutes,
+  // not seconds) because the caller does the spawning.
+  it("returns the default (600s) for sonnet when config is absent", () => {
     expect(resolveLensTimeoutMs("sonnet", undefined)).toBe(
       DEFAULT_LENS_TIMEOUT_MS.default,
     );
-    expect(resolveLensTimeoutMs("sonnet", undefined)).toBe(60_000);
+    expect(resolveLensTimeoutMs("sonnet", undefined)).toBe(600_000);
   });
 
-  it("returns the opus default (120s) for opus when config is absent", () => {
+  it("returns the opus default (1200s) for opus when config is absent", () => {
     expect(resolveLensTimeoutMs("opus", undefined)).toBe(
       DEFAULT_LENS_TIMEOUT_MS.opus,
     );
-    expect(resolveLensTimeoutMs("opus", undefined)).toBe(120_000);
+    expect(resolveLensTimeoutMs("opus", undefined)).toBe(1_200_000);
   });
 
   it("returns the model defaults when lensTimeout is unset", () => {
-    expect(resolveLensTimeoutMs("sonnet", {})).toBe(60_000);
-    expect(resolveLensTimeoutMs("opus", {})).toBe(120_000);
+    expect(resolveLensTimeoutMs("sonnet", {})).toBe(600_000);
+    expect(resolveLensTimeoutMs("opus", {})).toBe(1_200_000);
   });
 
   it("applies a scalar override to every model", () => {

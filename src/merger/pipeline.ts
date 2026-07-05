@@ -15,9 +15,13 @@
  * the contract with the agent; internal grouping is the merger's business.
  */
 
+import { CORE_LENS_IDS } from "../lenses/core-lens-ids.js";
 import type { LensId } from "../lenses/prompts/index.js";
 import {
+  COVERED_STATUSES,
   DEFAULT_MERGER_CONFIG,
+  type LensCoverageEntry,
+  type LensErrorCode,
   type LensOutput,
   type MergerConfig,
   type NextAction,
@@ -61,6 +65,20 @@ export interface MergerInput {
    * when nothing is retryable.
    */
   readonly nextActions?: readonly NextAction[];
+  /**
+   * T-027 R14(d): per-lens coverage disclosure built by
+   * `buildLensCoverage` in review-state. When present, the merger
+   * derives `coverage` + `errorCodes` from it and applies the
+   * core-coverage cap. Absent (legacy callers / unit tests) -> the
+   * verdict carries the defaulted empty disclosure and no cap fires.
+   */
+  readonly lensCoverage?: readonly LensCoverageEntry[];
+  /**
+   * T-027: false when this envelope is INTERIM (the review stays open:
+   * retries pending or expected lenses still uncovered). Interim
+   * envelopes can never carry `approve`.
+   */
+  readonly reviewComplete?: boolean;
 }
 
 /**
@@ -84,6 +102,8 @@ export function runMergerPipeline(input: MergerInput): ReviewVerdict {
   const config = input.mergerConfig ?? DEFAULT_MERGER_CONFIG;
   const parseErrors: readonly ParseError[] = input.parseErrors ?? [];
   const nextActions: readonly NextAction[] = input.nextActions ?? [];
+  const lensCoverage: readonly LensCoverageEntry[] = input.lensCoverage ?? [];
+  const reviewComplete = input.reviewComplete ?? true;
 
   let rawFindingCount = 0;
   for (const { output } of input.perLens) {
@@ -96,11 +116,32 @@ export function runMergerPipeline(input: MergerInput): ReviewVerdict {
   const tensions = detectTensions(kept);
   const { verdict: baseVerdict, counts } = computeVerdict(kept);
 
-  // Downgrade verdict when retries are pending so the caller never
-  // observes `approve` with non-empty `nextActions` (ReviewVerdictSchema
-  // superRefine enforces this too; belt-and-suspenders here).
+  // T-027 R14(c): coverage + errorCodes derive mechanically from the
+  // disclosure so they can never disagree with lensCoverage (the
+  // schema's superRefine rules (c)/(d) re-enforce the same tie).
+  const anyUncovered = lensCoverage.some(
+    (e) => !COVERED_STATUSES.has(e.status),
+  );
+  const coverage: "full" | "partial" = anyUncovered ? "partial" : "full";
+  const anyExpired = lensCoverage.some((e) => e.status === "expired");
+  const errorCodes: LensErrorCode[] = anyExpired ? ["PARTIAL_RESULTS"] : [];
+
+  // Verdict caps. Each is a downgrade of `approve` to `revise`; a
+  // `reject` (blocking > 0) is never softened.
+  //  - retry cap (T-022): retries pending -> never approve.
+  //  - core-coverage cap (T-027 DEFECT 2): a CORE lens without a real
+  //    contribution (ok/cached) -> never approve. Closes the false
+  //    approve when core lenses die.
+  //  - interim cap (T-027): an interim envelope -> never approve.
+  const coreUncovered = lensCoverage.some(
+    (e) =>
+      (CORE_LENS_IDS as readonly string[]).includes(e.lensId) &&
+      !COVERED_STATUSES.has(e.status),
+  );
+  const capped =
+    nextActions.length > 0 || coreUncovered || !reviewComplete;
   const verdict =
-    nextActions.length > 0 && baseVerdict === "approve" ? "revise" : baseVerdict;
+    capped && baseVerdict === "approve" ? "revise" : baseVerdict;
 
   return {
     verdict,
@@ -116,5 +157,9 @@ export function runMergerPipeline(input: MergerInput): ReviewVerdict {
     suppressedFindingCount: deferred.length,
     hadAnyFindings,
     nextActions: [...nextActions],
+    lensCoverage: [...lensCoverage],
+    coverage,
+    errorCodes,
+    reviewComplete,
   };
 }

@@ -42,10 +42,53 @@ import {
   DeferralKeySchema,
   LensFindingSchema,
   LensOutputSchema,
+  ReviewVerdictSchema,
   StageSchema,
 } from "../schema/index.js";
 
 export const CURRENT_IN_FLIGHT_SCHEMA_VERSION = 1 as const;
+
+/**
+ * T-027 R-D6: failure-injection hooks, scoped by OPERATION and by
+ * target. A hook fires only when every scope field matches the
+ * operation's arguments, is single-shot, and every pending hook is
+ * cleared via the review-state `_resetForTests` seam (which calls
+ * `_clearFailureHooksForTests` below). Unscoped global failure hooks
+ * are forbidden.
+ */
+interface TaskWriteScope {
+  readonly reviewId: string;
+  readonly lensId: string;
+  readonly attempt: number;
+}
+interface ReviewScope {
+  readonly reviewId: string;
+}
+let failNextTaskWrite: TaskWriteScope | null = null;
+let failNextIndexRmw: ReviewScope | null = null;
+let failNextCompletionWrite: ReviewScope | null = null;
+
+/** @internal Test-only: fail the next writeTask matching the scope. */
+export function _failNextTaskWriteForTests(scope: TaskWriteScope): void {
+  failNextTaskWrite = scope;
+}
+
+/** @internal Test-only: fail the next index read-modify-write for the review. */
+export function _failNextIndexRmwForTests(scope: ReviewScope): void {
+  failNextIndexRmw = scope;
+}
+
+/** @internal Test-only: fail the next completion write for the review. */
+export function _failNextCompletionWriteForTests(scope: ReviewScope): void {
+  failNextCompletionWrite = scope;
+}
+
+/** @internal Test-only: clear every pending failure hook. */
+export function _clearFailureHooksForTests(): void {
+  failNextTaskWrite = null;
+  failNextIndexRmw = null;
+  failNextCompletionWrite = null;
+}
 
 /** Default TTL for in-flight records. Override via LENSES_IN_FLIGHT_TTL_MS. */
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -122,12 +165,39 @@ export const IndexRecordSchema = z
           model: z.enum(["opus", "sonnet"]),
           promptHash: z.string().min(1),
           expiresAt: z.string().datetime({ offset: true }),
+          // T-027 R14(h): the lens's timeout budget, persisted so
+          // deadline re-anchoring survives a restart. Optional (no
+          // schema-version bump); hydration of pre-T-027 index files
+          // falls back to resolveLensTimeoutMs(model, undefined).
+          timeoutMs: z.number().int().positive().optional(),
+          // T-027 R-B1 (ratified alternative branch): set when a retry
+          // NextAction is emitted. Hydration reconciles pendingAttempt
+          // N with a missing terminal attempt N-1 so an in-window
+          // retry is never rejected as non-contiguous after a restart.
+          pendingAttempt: z.number().int().min(2).optional(),
         })
         .strict(),
     ),
   })
   .strict();
 export type IndexRecord = z.infer<typeof IndexRecordSchema>;
+
+/**
+ * T-027 (pen resolution 2): the durable completion record. Written by
+ * `commitReviewCompletion` BEFORE the in-memory status flips to
+ * `complete`; its presence is what makes a replayed completion call a
+ * DUPLICATE_COMPLETE across restarts, and its stored verdict feeds the
+ * replay envelope's `storedVerdict` sibling field.
+ */
+export const CompletionRecordSchema = z
+  .object({
+    schemaVersion: z.literal(CURRENT_IN_FLIGHT_SCHEMA_VERSION),
+    reviewId: z.string().uuid(),
+    completedAt: z.string().datetime({ offset: true }),
+    verdict: ReviewVerdictSchema,
+  })
+  .strict();
+export type CompletionRecord = z.infer<typeof CompletionRecordSchema>;
 
 /**
  * `taskId` formula. sha256 over the three-tuple that uniquely
@@ -252,12 +322,101 @@ export function readPrompt(
 }
 
 export function writeTask(record: TaskRecord): void {
+  if (
+    failNextTaskWrite !== null &&
+    failNextTaskWrite.reviewId === record.reviewId &&
+    failNextTaskWrite.lensId === record.lensId &&
+    failNextTaskWrite.attempt === record.attempt
+  ) {
+    failNextTaskWrite = null; // single-shot
+    throw new Error(
+      `in-flight: injected task write failure (${record.lensId}@${record.attempt})`,
+    );
+  }
   TaskRecordSchema.parse(record);
   reviewDir(record.reviewId);
   atomicWriteFile(
     taskPath(record.reviewId, record.lensId, record.attempt),
     JSON.stringify(record),
   );
+}
+
+function completionPath(reviewId: string): string {
+  return join(inFlightDir(), reviewId, "completion.json");
+}
+
+/**
+ * Durable completion write. Unlike the best-effort task/index writers'
+ * CALLERS, `commitReviewCompletion` treats a throw here as fatal for
+ * the finalizing call (PERSISTENCE_FAILED envelope), so this function
+ * intentionally propagates IO errors.
+ */
+export function writeCompletion(record: CompletionRecord): void {
+  if (
+    failNextCompletionWrite !== null &&
+    failNextCompletionWrite.reviewId === record.reviewId
+  ) {
+    failNextCompletionWrite = null; // single-shot
+    throw new Error(
+      `in-flight: injected completion write failure (${record.reviewId})`,
+    );
+  }
+  CompletionRecordSchema.parse(record);
+  reviewDir(record.reviewId);
+  atomicWriteFile(completionPath(record.reviewId), JSON.stringify(record));
+}
+
+export function readCompletion(
+  reviewId: string,
+): CompletionRecord | undefined {
+  return safeReadJson(completionPath(reviewId), CompletionRecordSchema);
+}
+
+/**
+ * T-027 R7: deadline durability lives in the INDEX, never in task
+ * records. Both the prompt-fetch anchor and the retry mint persist via
+ * this lensMeta read-modify-write only. Throws on IO failure (callers
+ * decide whether to swallow); a missing index (memory-only session) is
+ * a silent no-op.
+ */
+export function updateIndexLensMeta(
+  reviewId: string,
+  lensId: string,
+  patch: {
+    readonly expiresAt?: string;
+    readonly pendingAttempt?: number;
+  },
+): void {
+  if (failNextIndexRmw !== null && failNextIndexRmw.reviewId === reviewId) {
+    failNextIndexRmw = null; // single-shot
+    throw new Error(`in-flight: injected index RMW failure (${reviewId})`);
+  }
+  const index = readIndex(reviewId);
+  if (index === undefined) return; // memory-only session: nothing durable to update
+  const meta = index.lensMeta[lensId];
+  if (meta === undefined) return; // lens unknown to the index (e.g. cached-only)
+  const nextMeta = {
+    ...meta,
+    ...(patch.expiresAt !== undefined ? { expiresAt: patch.expiresAt } : {}),
+    ...(patch.pendingAttempt !== undefined
+      ? { pendingAttempt: patch.pendingAttempt }
+      : {}),
+  };
+  writeIndex({
+    ...index,
+    lensMeta: { ...index.lensMeta, [lensId]: nextMeta },
+  });
+}
+
+/**
+ * Whether the review has a durable index on disk. Distinguishes the
+ * memory-only path ("no index file exists" -> completion proceeds in
+ * memory) from an IO failure (a THROW here or in the completion write
+ * feeds PERSISTENCE_FAILED on finalizing paths). Propagates throws
+ * from `inFlightDir` resolution deliberately.
+ */
+export function hasIndexFile(reviewId: string): boolean {
+  return existsSync(indexPath(reviewId));
 }
 
 export function readTask(
@@ -268,36 +427,120 @@ export function readTask(
   return safeReadJson(taskPath(reviewId, lensId, attempt), TaskRecordSchema);
 }
 
+const TERMINAL_STATUSES: ReadonlySet<TaskRecord["status"]> = new Set([
+  "completed",
+  "failed",
+  "expired",
+]);
+
+function isTerminal(r: TaskRecord): boolean {
+  return TERMINAL_STATUSES.has(r.status);
+}
+
+function hasOkOutput(r: TaskRecord): boolean {
+  return r.lensOutput !== null && r.lensOutput.status === "ok";
+}
+
+/** Equal-attempt status rank (R-D5 rule 4): higher rank is preferred. */
+const STATUS_RANK: Record<TaskRecord["status"], number> = {
+  completed: 4,
+  failed: 3,
+  expired: 2,
+  in_flight: 1,
+  pending: 0,
+};
+
+/**
+ * T-027 R-D5: the named pure comparator for per-lens record selection.
+ * Returns a positive number when `a` is preferred over `b`, negative
+ * for the reverse, never 0 for distinct on-disk records (the writer
+ * cannot produce two records at one (lensId, attempt)). Rules 2-4 of
+ * the documented total order live here; rule 1 (expired never erases a
+ * prior terminal ok) is a pre-filter in `selectTaskRecord` because it
+ * ranges over the whole record SET, not a pair.
+ */
+export function compareTaskRecords(a: TaskRecord, b: TaskRecord): number {
+  // Rule 3: non-terminal records are used only when the lens has no
+  // terminal record at all, regardless of attempt numbers.
+  const at = isTerminal(a);
+  const bt = isTerminal(b);
+  if (at !== bt) return at ? 1 : -1;
+  // Rule 2: within a class, the highest attempt wins (failed@2 beats
+  // ok@1: a later failed attempt is the latest lens state).
+  if (a.attempt !== b.attempt) return a.attempt - b.attempt;
+  // Rule 4 (defensive tiebreak to keep the order total): at equal
+  // attempt prefer completed/failed over expired over non-terminal,
+  // and completed over failed.
+  return STATUS_RANK[a.status] - STATUS_RANK[b.status];
+}
+
+/**
+ * T-027 R-D5: per-lens record selection. Documented total order:
+ *  (1) discard any "expired" record whose attempt is higher than a
+ *      terminal record carrying an ok lensOutput for the same lens (a
+ *      corrupt or late expired record never erases a prior ok; the
+ *      reader-side mirror of the R2 writer invariant);
+ *  (2) among the remaining records the highest-attempt TERMINAL record
+ *      (completed/failed/expired) wins;
+ *  (3) non-terminal records are used only when the lens has no
+ *      terminal record at all;
+ *  (4) at equal attempt prefer completed/failed over expired over
+ *      non-terminal, and defensively completed over failed.
+ */
+export function selectTaskRecord(
+  records: readonly TaskRecord[],
+): TaskRecord | undefined {
+  if (records.length === 0) return undefined;
+  let maxOkAttempt = -1;
+  for (const r of records) {
+    if (isTerminal(r) && hasOkOutput(r) && r.attempt > maxOkAttempt) {
+      maxOkAttempt = r.attempt;
+    }
+  }
+  // Rule 1 pre-filter.
+  const eligible = records.filter(
+    (r) => !(r.status === "expired" && r.attempt > maxOkAttempt && maxOkAttempt >= 0),
+  );
+  const pool = eligible.length > 0 ? eligible : records;
+  let best: TaskRecord | undefined;
+  for (const r of pool) {
+    if (best === undefined || compareTaskRecords(r, best) > 0) best = r;
+  }
+  return best;
+}
+
 /**
  * Read every task record for a review and return a Map keyed by
- * `lensId` containing the HIGHEST-attempt record per lens.
- *
- * Assumption: `registerReview` writes attempt-1 pending seeds. No code
- * path in this ticket writes attempt-N pending seeds for N > 1. If a
- * future retry-seed write path is added, `hydrateFromDisk`'s
- * non-terminal-skip logic must be revisited: if the max-attempt record
- * is non-terminal, the prior-attempt terminal record would be
- * permanently invisible here. File a follow-up ticket before adding
- * that path.
+ * `lensId` containing the record selected by the R-D5 total order
+ * above (terminal-preferred selection). `hydrateFromDisk`'s
+ * anyTerminalTask derivation keeps working because a lens with any
+ * terminal record always surfaces a terminal record here.
  */
 export function readAllTasks(reviewId: string): Map<string, TaskRecord> {
-  const out = new Map<string, TaskRecord>();
+  const byLens = new Map<string, TaskRecord[]>();
   const dir = join(inFlightDir(), reviewId, "tasks");
   let entries: readonly string[];
   try {
     entries = readdirSync(dir);
   } catch {
-    return out;
+    return new Map();
   }
   for (const entry of entries) {
     if (!entry.endsWith(".json")) continue;
     const full = join(dir, entry);
     const parsed = safeReadJson(full, TaskRecordSchema);
     if (parsed === undefined) continue;
-    const current = out.get(parsed.lensId);
-    if (current === undefined || parsed.attempt > current.attempt) {
-      out.set(parsed.lensId, parsed);
+    const list = byLens.get(parsed.lensId);
+    if (list === undefined) {
+      byLens.set(parsed.lensId, [parsed]);
+    } else {
+      list.push(parsed);
     }
+  }
+  const out = new Map<string, TaskRecord>();
+  for (const [lensId, records] of byLens) {
+    const selected = selectTaskRecord(records);
+    if (selected !== undefined) out.set(lensId, selected);
   }
   return out;
 }
@@ -342,7 +585,11 @@ export function cleanupStaleInFlight(
 
 function safeReadJson<T>(
   path: string,
-  schema: z.ZodType<T>,
+  // Input type left free (`z.ZodType<T, z.ZodTypeDef, unknown>`) so
+  // schemas whose Input differs from Output (e.g. `.default()`ed
+  // fields inside CompletionRecordSchema's nested ReviewVerdictSchema)
+  // still satisfy the constraint; we only ever consume the OUTPUT.
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
 ): T | undefined {
   if (!existsSync(path)) return undefined;
   try {

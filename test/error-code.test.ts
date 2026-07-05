@@ -24,6 +24,9 @@ const _exhaustive: Record<LensErrorCode, true> = {
   MERGE_CONFLICT: true,
   CONFIG_MISMATCH: true,
   AGENT_TIMEOUT: true,
+  // T-027 (pen resolution 6): durable-completion write failure on a
+  // finalizing call.
+  PERSISTENCE_FAILED: true,
   UNKNOWN_ERROR: true,
 } satisfies Record<LensErrorCode, true>;
 
@@ -60,5 +63,14 @@ describe("LENS_ERROR_MESSAGES", () => {
     for (const key of messageKeys) {
       expect(LensErrorCodeSchema.safeParse(key).success).toBe(true);
     }
+  });
+
+  // T-027 R6: neutral wording that does not claim the code is
+  // unproduced (T-032 scope item 4 will produce it again for the 24h
+  // in-flight TTL path).
+  it("pins the R6 REVIEW_EXPIRED wording", () => {
+    expect(LENS_ERROR_MESSAGES.REVIEW_EXPIRED).toBe(
+      "The review's retained state expired; start a fresh review round.",
+    );
   });
 });

@@ -83,9 +83,12 @@ export type DeferredFinding = z.infer<typeof DeferredFindingSchema>;
  *    `<retry-context>` suffix describing what broke. The caller does NOT
  *    fetch the prompt via `lens_review_get_prompt` for a retry; that tool
  *    is stateless and only returns the original prompt.
- *  - `expiresAt` is ISO 8601 (computed server-side at hop-1 from
- *    `resolveLensTimeoutMs`). Past-expiry resubmissions are rejected with
- *    `REVIEW_EXPIRED` at hop-2.
+ *  - `expiresAt` is ISO 8601, minted FRESH at retry emission time
+ *    (T-027 R8: now + the lens's timeout, re-anchored server-side so the
+ *    wire value equals the enforced value; the hop-1 deadline is never
+ *    reused). A resubmission past this deadline is not rejected: the
+ *    lens is diverted to `expired` coverage and the review still
+ *    finalizes with `coverage: "partial"` + PARTIAL_RESULTS.
  */
 export const NextActionSchema = z
   .object({

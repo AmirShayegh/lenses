@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+// T-027 R10/R-D1: import the core lens set from the LEAF module
+// directly, never from lenses/registry.ts. The registry route would be
+// a real ESM cycle (prompts/index.ts export-stars shared-preamble.ts,
+// which value-imports schema/index.ts). The leaf has zero runtime
+// imports, so this edge is cycle-free.
+import { CORE_LENS_IDS } from "../lenses/core-lens-ids.js";
+import { LensErrorCodeSchema } from "./error-code.js";
 import { MergedFindingSchema, type Severity } from "./finding.js";
 import {
   DeferredFindingSchema,
@@ -48,6 +55,42 @@ const SEVERITY_COUNT_FIELDS: readonly Severity[] = [
 ] as const;
 
 /**
+ * T-027: per-lens coverage disclosure. One entry per expected lens in
+ * the verdict envelope so partial coverage can never masquerade as a
+ * clean full pass.
+ *
+ * Status precedence (R14e), applied per lens by the builder:
+ * expired -> ok (latest output ok) -> parse_failed (latest error starts
+ * with "parse failure") -> error (other latest error) -> cached ->
+ * skipped.
+ */
+export const LensCoverageStatusSchema = z.enum([
+  "ok",
+  "error",
+  "skipped",
+  "expired",
+  "parse_failed",
+  "cached",
+]);
+export type LensCoverageStatus = z.infer<typeof LensCoverageStatusSchema>;
+
+export const LensCoverageEntrySchema = z
+  .object({
+    lensId: z.string().min(1),
+    status: LensCoverageStatusSchema,
+    attempts: z.number().int().min(0),
+    contributedFindings: z.number().int().min(0),
+  })
+  .strict();
+export type LensCoverageEntry = z.infer<typeof LensCoverageEntrySchema>;
+
+/** Statuses that count as a real contribution (full coverage). */
+export const COVERED_STATUSES: ReadonlySet<LensCoverageStatus> = new Set([
+  "ok",
+  "cached",
+]);
+
+/**
  * Structured verdict returned to the agent. Shape is flat to match
  * the CLAUDE.md architecture contract. A `superRefine` enforces that the
  * top-level severity counts equal the number of findings with that severity,
@@ -65,6 +108,16 @@ const SEVERITY_COUNT_FIELDS: readonly Severity[] = [
  *  - `nextActions[]` — cooperative retry instructions. When non-empty, the
  *    verdict MUST be `revise` (or `reject` if blocking > 0); the caller
  *    re-spawns the named lenses and resubmits with incremented `attempt`.
+ *
+ * T-027 extensions (all four DEFAULTED so pre-T-027 consumers parse
+ * unchanged, R14b):
+ *  - `lensCoverage[]` -- one entry per expected lens; the exact-set tie
+ *    to expectedLensIds is enforced in complete.ts (R-D3), not here.
+ *  - `coverage` -- "partial" iff any lensCoverage entry is outside
+ *    ok/cached.
+ *  - `errorCodes` -- carries PARTIAL_RESULTS iff any entry is expired.
+ *  - `reviewComplete` -- false for interim envelopes (incremental
+ *    submission); interim envelopes can never carry approve.
  */
 export const ReviewVerdictSchema = z
   .object({
@@ -81,6 +134,10 @@ export const ReviewVerdictSchema = z
     suppressedFindingCount: z.number().int().min(0).default(0),
     hadAnyFindings: z.boolean(),
     nextActions: z.array(NextActionSchema).default([]),
+    lensCoverage: z.array(LensCoverageEntrySchema).default([]),
+    coverage: z.enum(["full", "partial"]).default("full"),
+    errorCodes: z.array(LensErrorCodeSchema).default([]),
+    reviewComplete: z.boolean().default(true),
   })
   .strict()
   .superRefine((val, ctx) => {
@@ -186,6 +243,106 @@ export const ReviewVerdictSchema = z
         path: ["verdict"],
         message: `verdict cannot be 'approve' while nextActions.length > 0 (retries pending)`,
       });
+    }
+    // T-027 R14(d) rules (a)-(f). These are ADDITIONAL to every rule
+    // above; the nextActions approve rule stays untouched. All of them
+    // range over the entries PRESENT in lensCoverage: the exact-set
+    // guarantee (lensCoverage ids === expectedLensIds) lives in
+    // complete.ts per R-D3, because the schema cannot see the session.
+    // (a) distinct lensIds.
+    const coverageIds = new Set<string>();
+    for (const entry of val.lensCoverage) {
+      if (coverageIds.has(entry.lensId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["lensCoverage"],
+          message: `lensCoverage has duplicate entry for lens '${entry.lensId}'`,
+        });
+      }
+      coverageIds.add(entry.lensId);
+    }
+    const uncovered = val.lensCoverage.filter(
+      (e) => !COVERED_STATUSES.has(e.status),
+    );
+    // (b) core-coverage cap: approve is invalid when any CORE lens
+    // entry is outside ok/cached. With R1's disposition order no
+    // contributing lens can ever be reported "expired", so this rule
+    // can never throw post-finalize on an honest envelope.
+    if (val.verdict === "approve") {
+      for (const entry of uncovered) {
+        if ((CORE_LENS_IDS as readonly string[]).includes(entry.lensId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["verdict"],
+            message: `verdict cannot be 'approve' while core lens '${entry.lensId}' has coverage '${entry.status}'`,
+          });
+        }
+      }
+    }
+    // (c) coverage is 'partial' iff any entry is outside ok/cached.
+    const expectPartial = uncovered.length > 0;
+    if (expectPartial && val.coverage !== "partial") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["coverage"],
+        message: `coverage must be 'partial' when a lensCoverage entry is outside ok/cached`,
+      });
+    }
+    if (!expectPartial && val.coverage !== "full") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["coverage"],
+        message: `coverage must be 'full' when every lensCoverage entry is ok/cached`,
+      });
+    }
+    // (d) PARTIAL_RESULTS appears in errorCodes iff any entry expired
+    // (timeouts only; merely-awaiting 'skipped' lenses do not fire it).
+    const anyExpired = val.lensCoverage.some((e) => e.status === "expired");
+    const hasPartialResults = val.errorCodes.includes("PARTIAL_RESULTS");
+    if (anyExpired && !hasPartialResults) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["errorCodes"],
+        message: `errorCodes must include PARTIAL_RESULTS when a lens expired`,
+      });
+    }
+    if (!anyExpired && hasPartialResults) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["errorCodes"],
+        message: `errorCodes must not include PARTIAL_RESULTS without an expired lens`,
+      });
+    }
+    // (e) reality tie: expired/skipped entries contributed nothing.
+    for (const entry of val.lensCoverage) {
+      if (
+        (entry.status === "expired" || entry.status === "skipped") &&
+        entry.contributedFindings !== 0
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["lensCoverage"],
+          message: `lens '${entry.lensId}' has status '${entry.status}' but contributedFindings=${entry.contributedFindings}`,
+        });
+      }
+    }
+    // (f) interim discipline: an interim envelope can never carry
+    // approve and is by construction partial.
+    if (val.reviewComplete === false) {
+      if (val.verdict === "approve") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["verdict"],
+          message: `verdict cannot be 'approve' while reviewComplete=false`,
+        });
+      }
+      if (val.coverage !== "partial") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["coverage"],
+          message: `coverage must be 'partial' while reviewComplete=false`,
+        });
+      }
     }
   });
 export type ReviewVerdict = z.infer<typeof ReviewVerdictSchema>;
