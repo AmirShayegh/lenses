@@ -140,9 +140,9 @@ interface Surface {
   readonly exactBasenames?: readonly string[];
 }
 
-type SurfaceRule = Surface | "core" | "test-quality-dual-mode";
+export type SurfaceRule = Surface | "core" | "test-quality-dual-mode";
 
-const SURFACE_RULES: Record<LensId, SurfaceRule> = {
+export const SURFACE_RULES: Record<LensId, SurfaceRule> = {
   security: "core",
   "error-handling": "core",
   "clean-code": "core",

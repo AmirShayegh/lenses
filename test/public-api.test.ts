@@ -57,6 +57,37 @@ import {
   LENS_ERROR_MESSAGES,
   LensErrorCodeSchema,
   type LensErrorCode,
+  // T-033 stable library surface (lenses/public.ts)
+  LENSES,
+  getLens,
+  SURFACE_RULES,
+  type PublicLensDefinition,
+  type SurfaceRule,
+  // T-033 activation (lenses/registry.ts)
+  activate,
+  LensConfigSchema,
+  LensIdSchema,
+  type LensActivation,
+  type Model,
+  type LensConfig,
+  // T-033 prompt construction (lenses/prompt-builder.ts + lenses/prompts)
+  renderLensBody,
+  renderSharedPreamble,
+  buildLensPrompt,
+  buildAgentPrompts,
+  PreambleConfigSchema,
+  ProjectContextSchema,
+  type SharedPreambleParams,
+  type AgentPrompt,
+  type BuildLensPromptParams,
+  type BuildAgentPromptsParams,
+  type PreambleConfig,
+  type PreambleConfigInput,
+  type ProjectContext,
+  // T-033 merger pipeline entry (merger/pipeline.ts)
+  runMergerPipeline,
+  type MergerInput,
+  type LensRunResult,
   // lenses/prompts (type-only)
   type LensId,
 } from "../src/index.js";
@@ -109,6 +140,21 @@ type _TypeOnlyBindings = [
   GetPromptParams,
   // T-024 error taxonomy
   LensErrorCode,
+  // T-033 stable library surface
+  PublicLensDefinition,
+  SurfaceRule,
+  LensActivation,
+  Model,
+  LensConfig,
+  AgentPrompt,
+  BuildLensPromptParams,
+  BuildAgentPromptsParams,
+  PreambleConfig,
+  PreambleConfigInput,
+  ProjectContext,
+  SharedPreambleParams,
+  MergerInput,
+  LensRunResult,
 ];
 
 describe("public API re-exports (src/index.ts)", () => {
@@ -271,5 +317,123 @@ describe("public API re-exports (src/index.ts)", () => {
     for (const schema of schemas) {
       expect(typeof schema.parse).toBe("function");
     }
+  });
+});
+
+describe("T-033 stable library surface", () => {
+  it("(A) exposes the lens-core functions and schema parsers as root imports", () => {
+    expect(typeof buildLensPrompt).toBe("function");
+    expect(typeof runMergerPipeline).toBe("function");
+    expect(typeof activate).toBe("function");
+    expect(typeof getLens).toBe("function");
+    expect(typeof renderLensBody).toBe("function");
+    expect(typeof renderSharedPreamble).toBe("function");
+    expect(typeof buildAgentPrompts).toBe("function");
+    expect(typeof PreambleConfigSchema.parse).toBe("function");
+    expect(typeof ProjectContextSchema.parse).toBe("function");
+    expect(typeof LensConfigSchema.parse).toBe("function");
+    expect(typeof LensIdSchema.parse).toBe("function");
+  });
+
+  it("(B) exports frozen registry projections", () => {
+    expect(Object.isFrozen(LENSES)).toBe(true);
+    expect(Object.isFrozen(LENSES["security"])).toBe(true);
+    expect(Object.isFrozen(SURFACE_RULES)).toBe(true);
+    expect(Object.isFrozen(SURFACE_RULES.performance)).toBe(true);
+    expect(
+      Object.isFrozen(
+        (SURFACE_RULES.performance as { extensions: readonly string[] })
+          .extensions,
+      ),
+    ).toBe(true);
+  });
+
+  it("(C) keeps optsSchema and renderBody off the public lens surface", () => {
+    expect(
+      Object.prototype.hasOwnProperty.call(getLens("security"), "optsSchema"),
+    ).toBe(false);
+    expect(
+      Object.prototype.hasOwnProperty.call(getLens("security"), "renderBody"),
+    ).toBe(false);
+  });
+
+  it("(D) mutating any exported registry object throws and cannot alter prompt output", () => {
+    const [activation] = activate({
+      stage: "CODE_REVIEW",
+      changedFiles: ["src/x.ts"],
+      config: { lenses: ["security"] },
+    });
+    // `noUncheckedIndexedAccess` widens the destructured element to
+    // `LensActivation | undefined`; narrow it so tsc stays clean (Step 4 gate).
+    if (activation === undefined) {
+      throw new Error("expected a security activation");
+    }
+    const startParams = StartParamsSchema.parse({
+      stage: "CODE_REVIEW",
+      changedFiles: ["src/x.ts"],
+      artifact: "diff",
+      ticketDescription: null,
+      reviewRound: 1,
+    });
+    const preambleConfig = PreambleConfigSchema.parse({});
+    const baseline = buildLensPrompt({
+      activation,
+      startParams,
+      preambleConfig,
+    }).prompt;
+
+    expect(() => {
+      (getLens("security") as unknown as { id: string }).id = "mutated";
+    }).toThrow(TypeError);
+    expect(() => {
+      (LENSES as unknown as Record<string, unknown>)["security"] = {};
+    }).toThrow(TypeError);
+    expect(() => {
+      (
+        SURFACE_RULES.performance as unknown as { extensions: string[] }
+      ).extensions.push(".zzz");
+    }).toThrow(TypeError);
+
+    const after = buildLensPrompt({
+      activation,
+      startParams,
+      preambleConfig,
+    }).prompt;
+    expect(after).toBe(baseline);
+  });
+
+  it("(E) builds a prompt and merges synthetic lens outputs through the pipeline via root imports", () => {
+    const a: LensRunResult = {
+      lensId: "security",
+      output: {
+        status: "ok",
+        findings: [
+          {
+            id: "f1",
+            severity: "major",
+            category: "auth",
+            file: "src/x.ts",
+            line: 3,
+            description: "d",
+            suggestion: "s",
+            confidence: 0.9,
+          },
+        ],
+        error: null,
+        notes: null,
+      },
+    };
+    const b: LensRunResult = {
+      lensId: "clean-code",
+      output: { status: "ok", findings: [], error: null, notes: null },
+    };
+    const verdict = runMergerPipeline({
+      reviewId: "r",
+      sessionId: "smoke-session",
+      perLens: [a, b],
+    });
+    expect(["approve", "revise", "reject"]).toContain(verdict.verdict);
+    expect(verdict.sessionId).toBe("smoke-session");
+    expect(verdict.hadAnyFindings).toBe(true);
   });
 });
