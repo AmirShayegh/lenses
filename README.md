@@ -41,4 +41,4 @@ All registry objects exported from the package root (`LENSES`, each lens project
 
 ## License
 
-PolyForm-Noncommercial-1.0.0
+[PolyForm Shield 1.0.0](https://polyformproject.org/licenses/shield/1.0.0/) - source-available, non-compete (not OSI open source). Any use is permitted (personal, internal, commercial) except building a product that competes with storybloq or lenses. Competing, hosted, or white-label use requires a separate license: contact shayegh@me.com. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).

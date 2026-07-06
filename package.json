@@ -34,5 +34,5 @@
     "vitest": "1.5.0"
   },
   "publishConfig": { "access": "public" },
-  "license": "PolyForm-Noncommercial-1.0.0"
+  "license": "PolyForm-Shield-1.0.0"
 }
