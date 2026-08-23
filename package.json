@@ -1,6 +1,6 @@
 {
   "name": "@storybloq/lenses",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Multi-lens code review MCP server — 8 specialized reviewers in parallel",
   "type": "module",
   "main": "dist/index.js",
@@ -13,7 +13,7 @@
   },
   "bin": { "lenses": "dist/cli.js" },
   "engines": { "node": ">=20" },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": ["dist", "README.md", "LICENSE", "NOTICE"],
   "scripts": {
     "build": "tsup && node ./scripts/postbuild.mjs",
     "dev": "tsup --watch",
@@ -24,8 +24,8 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.0.4",
-    "zod": "3.23.8"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "20.12.7",
