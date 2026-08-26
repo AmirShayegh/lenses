@@ -1,5 +1,4 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -67,6 +66,16 @@ export function createServer(): Server {
  */
 export async function main(): Promise<void> {
   const server = createServer();
+  // Imported dynamically, not at module scope: the SDK's stdio.js imports
+  // node:process, and Node's ESM builtin facade eagerly reads every export at
+  // link time -- including the stdin getter, which constructs the TTY. A static
+  // import here would make ANY import of this package (index.ts re-exports
+  // main) acquire stdin, and on a wedged pty that open() hangs uninterruptibly
+  // (storybloq ISS-1043). Dynamic import defers it to the one caller that
+  // actually wants stdio.
+  const { StdioServerTransport } = await import(
+    "@modelcontextprotocol/sdk/server/stdio.js"
+  );
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
