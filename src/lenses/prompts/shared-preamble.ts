@@ -106,7 +106,12 @@ export function renderSharedPreamble(params: SharedPreambleParams): string {
   const findingFormatLines = [
     "## Finding format",
     "",
-    "Each finding in the `findings` array must have exactly these fields:",
+    // T-487: the old wording said "exactly these fields", which was already
+    // false for `snippet` and would have been doubly false once `principle`
+    // joined the list. Naming the optional ones is what stops a lens either
+    // dropping an optional field it should send or inventing a value for one
+    // it should omit.
+    "Each finding in the `findings` array is a JSON object of this shape. Every field below is required except `snippet` and `principle`, and an optional field is OMITTED entirely rather than sent as `null`, an empty string, or a placeholder:",
     "",
     "```json",
     "{",
@@ -118,7 +123,8 @@ export function renderSharedPreamble(params: SharedPreambleParams): string {
     '  "snippet": { "quote": "the exact source line at line 42, verbatim", "startLine": 42 },',
     '  "description": "what is wrong and why",',
     '  "suggestion": "actionable recommendation",',
-    '  "confidence": 0.85',
+    '  "confidence": 0.85,',
+    '  "principle": "optional: the review-contract principle this violates"',
     "}",
     "```",
     "",
@@ -135,6 +141,13 @@ export function renderSharedPreamble(params: SharedPreambleParams): string {
     // by the schema; this pins the CONTENT bar. No confidence-floor language
     // (R13: the floor lives only in output rule 7 above).
     "`description` must name a concrete failure scenario: the specific input, state, or call sequence that triggers the defect and the resulting harm. Do not merely restate the category or say a construct is \"risky\" without the triggering path.",
+    "",
+    // T-487: the quality-contract axis. Deliberately says OMIT rather than
+    // guess: a guessed principle that happens to match a declared one turns a
+    // finding a consumer would cap into one it will not, which is the
+    // laundering direction. Most projects declare no contract at all today, so
+    // omitting has to be the comfortable answer, not the exceptional one.
+    "If the Context section below carries project rules declaring a review contract that names principles, set `principle` to the one THIS finding violates, written lowercase exactly as the contract names it. Omit `principle` when the rules declare no contract, when no declared principle fits, or when you would have to reach for one: never guess a principle, and never name one the finding's own `description` does not support.",
   ];
   // R-D2(a): CODE_REVIEW-only. The server can only verify quotes against the
   // Diff new-side, so a defect outside the shown lines must be reported

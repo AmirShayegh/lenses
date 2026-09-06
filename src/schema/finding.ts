@@ -34,6 +34,48 @@ export const SnippetSchema = z
 export type Snippet = z.infer<typeof SnippetSchema>;
 
 /**
+ * T-487: a string that carries content, for a field where BLANK and ABSENT
+ * must not mean the same thing.
+ *
+ * `.min(1)` alone is not enough: `" "` passes it and then reads downstream as
+ * a present-but-meaningless claim. REJECTS rather than trims, because a
+ * transform would silently rewrite what a lens sent, and the contract stated
+ * everywhere else in this file is that a dirty value surfaces as a
+ * `parseErrors[]` entry instead of being quietly repaired.
+ */
+const NonBlankString = z
+  .string()
+  .min(1)
+  .refine((v) => v.trim().length > 0, { message: "must not be blank" });
+
+/**
+ * T-487: did the reviewed change introduce the defect?
+ *
+ * MIRRORS `FINDING_ORIGINS` in the storybloq workspace
+ * (`src/autonomous/review-identity.ts`). The values are byte-identical on
+ * purpose and the two lists can drift; exported so a consumer imports this
+ * rather than minting a third copy of the vocabulary.
+ */
+export const FindingOriginSchema = z.enum(["introduced", "pre-existing"]);
+export type FindingOrigin = z.infer<typeof FindingOriginSchema>;
+
+/**
+ * T-487: where the finding stands RELATIVE TO PRIOR ROUNDS, which is a
+ * different question from `origin`.
+ *
+ * MIRRORS `FINDING_ORIGIN_CLASSES` in the storybloq workspace, same drift
+ * caveat. `unchanged` carries no round number; the round lives in
+ * `sinceRound`, so the enum stays enumerable.
+ */
+export const FindingOriginClassSchema = z.enum([
+  "new",
+  "reintroduced",
+  "unchanged",
+  "introduced-by-fix",
+]);
+export type FindingOriginClass = z.infer<typeof FindingOriginClassSchema>;
+
+/**
  * Shared field shape for lens-reported findings and merger-produced merged
  * findings. Factored out so `LensFindingSchema` and `MergedFindingSchema` stay
  * in lockstep -- adding or renaming a field happens here exactly once.
@@ -73,6 +115,36 @@ const findingObjectShape = {
   description: z.string().min(1),
   suggestion: z.string().min(1),
   confidence: z.number().min(0).max(1),
+
+  // ── T-487: the quality contract axis, and the provenance axis ───────────
+  // All optional and none defaulted. A default would MANUFACTURE a claim, and
+  // for both axes the difference between "said nothing" and "said this" is the
+  // whole point: a consumer caps a finding that names no principle, and it
+  // keeps "no provenance claim was made" apart from "a claim was made and
+  // could not be read".
+  //
+  // These are NOT server-owned and deliberately do NOT belong in
+  // `sanitizeFindingForStorage` (see its doc, which mandates that every future
+  // SERVER-MINTED field be added there). `principle` is the lens's own claim
+  // about its own finding; the four provenance fields are the REPORTER's
+  // claim, and for this backend the lens is the reporter. Recorded because an
+  // unexplained absence from that stripper reads as a miss.
+
+  /**
+   * Which principle of the project's declared review contract this finding
+   * violates, lowercase. ABSENT is the only way to say "names no principle":
+   * a consumer reads a missing key as the empty string, so a blank value would
+   * be indistinguishable from absence at exactly the seam that decides whether
+   * the finding is capped. Hence `NonBlankString`.
+   */
+  principle: NonBlankString.optional(),
+
+  /** Why the reporter gave this finding its disposition. */
+  dispositionReason: NonBlankString.optional(),
+  origin: FindingOriginSchema.optional(),
+  originClass: FindingOriginClassSchema.optional(),
+  /** With `originClass: "unchanged"`, the round it has been unchanged since. */
+  sinceRound: z.number().int().positive().optional(),
 };
 
 /**

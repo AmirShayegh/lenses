@@ -409,6 +409,29 @@ export function dedupeFindings(
  * fields added by other wave items (e.g. T-026 snippet / anchorRealignedFrom)
  * survive without per-field enumeration. The winner's `id` identifies the
  * surviving representative, not a new entity.
+ *
+ * T-487 states the consequence as a RULE, because it is load-bearing for the
+ * fields that item added: a merge carries the REPRESENTATIVE's claim and never
+ * borrows, fills or escalates from another member. A claim is about the text it
+ * was written against, and members do not share text. Phase 1 keys on
+ * (file, line, category) and phase 2 groups on (file, category) within a
+ * two-line window. Members MAY describe the same defect -- that is the case
+ * dedup exists for -- but membership does not ESTABLISH it, and the tension
+ * module exists because lenses also disagree at the same coordinates. Since
+ * the group cannot tell those two situations apart, a member's claim is never
+ * treated as interchangeable with the representative's. Two drafts of T-487
+ * proposed borrowing
+ * (`principle` from a member when the representative named none; a provenance
+ * tuple from a `reintroduced` member) and both were rejected in review for
+ * attaching one finding's claim to a different finding's description.
+ *
+ * THE HONEST COST, so nobody rediscovers it as a surprise: a non-representative
+ * carrying `originClass: "reintroduced"` does not push the merged finding to
+ * `reintroduced`, so that block is not preserved. It costs nothing today
+ * because no lens emits provenance at all. It becomes a real question the
+ * moment one does, and that is ISS-1138's, together with where a member-level
+ * claim would be PUT. `test/t487-principle-schema.test.ts` fences both
+ * directions in both phases.
  */
 function spreadRep(
   base: LensFinding | MergedFinding,

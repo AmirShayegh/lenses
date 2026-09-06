@@ -105,7 +105,15 @@ export function normalizeRepoPath(p: string): string {
  * complete.ts and the read in start.ts (R-C4b). The anchor pass applies it
  * again as defense-in-depth. Any FUTURE server-minted finding field MUST be
  * added here (R-C2). Server-owned finding fields today: `anchorRealignedFrom`,
- * `integrityKey`. Reference identity is preserved when nothing is stripped.
+ * `integrityKey`.
+ *
+ * T-487 deliberately did NOT add `principle`, `dispositionReason`, `origin`,
+ * `originClass` or `sinceRound`. None is server-minted: `principle` is the
+ * lens's own claim about its own finding, and the four provenance fields are
+ * the REPORTER's claim, which for this backend is the lens. Recorded so the
+ * omission reads as a decision rather than a miss.
+ *
+ * Reference identity is preserved when nothing is stripped.
  */
 export function sanitizeFindingForStorage(f: LensFinding): LensFinding {
   if (f.anchorRealignedFrom === undefined && f.integrityKey === undefined) {
@@ -352,21 +360,25 @@ function findAnchorMatch(
   return best;
 }
 
-/** Convert a lens finding into a singleton merged finding (deferral shape). */
+/**
+ * Convert a lens finding into a singleton merged finding (deferral shape).
+ *
+ * T-487: SPREADS rather than enumerating. The enumerated version silently
+ * dropped every field added after it was written, so a deferred finding lost
+ * what a kept one twelve lines below kept -- the same defect reported two
+ * different ways depending on which branch it took. The spread matches both
+ * `kept.push({ ...f, ... })` in this file and `spreadRep` in dedup.ts, whose
+ * doc records the same reason.
+ *
+ * Spreading cannot leak a SERVER-OWNED field: the sole caller passes an `f`
+ * that came out of `sanitizeFindingForStorage`, so `integrityKey` and
+ * `anchorRealignedFrom` are already gone by here. (The enumerated version
+ * forwarded `anchorRealignedFrom` conditionally, which was dead on that path
+ * for the same reason.)
+ */
 function toSingletonMerged(f: LensFinding, lensId: string): MergedFinding {
   return {
-    id: f.id,
-    severity: f.severity,
-    category: f.category,
-    file: f.file,
-    line: f.line,
-    ...(f.snippet !== undefined ? { snippet: f.snippet } : {}),
-    ...(f.anchorRealignedFrom !== undefined
-      ? { anchorRealignedFrom: f.anchorRealignedFrom }
-      : {}),
-    description: f.description,
-    suggestion: f.suggestion,
-    confidence: f.confidence,
+    ...f,
     contributingLenses: [lensId] as MergedFinding["contributingLenses"],
   };
 }

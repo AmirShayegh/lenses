@@ -33,7 +33,15 @@ The package root (`@storybloq/lenses`) is a stable library surface, not just an 
 - `buildLensPrompt`, `buildAgentPrompts` - construct the complete self-contained prompt(s) for activated lenses
 - `renderLensBody`, `renderSharedPreamble` - lower-level prompt-body and shared-preamble renderers
 - `runMergerPipeline` - the single merger entry that runs dedup, blocking policy, tension detection, and verdict computation over per-lens outputs
-- the schema, verdict, and blocking-policy types and Zod validators re-exported from `src/schema`
+- the schema, verdict, and blocking-policy types and Zod validators re-exported from `src/schema`, including `FindingOriginSchema` and `FindingOriginClassSchema`
+
+### Optional finding fields, and one direction of compatibility
+
+As of 0.5.0 a finding may also carry `principle` (the review-contract principle it violates, supplied by the lens) and the reporter-supplied provenance fields `dispositionReason`, `origin`, `originClass` and `sinceRound`. All are optional and none is defaulted: absence means no claim was made, which is a different statement from a known-empty one, and `principle` additionally rejects blank values so that absence stays the only way to name no principle.
+
+The addition is one-directional. A payload produced before 0.5.0 parses on 0.5.0 unchanged. The reverse does NOT hold: `LensFindingSchema` is `.strict()`, so a consumer still on 0.4.x that receives a finding carrying `principle` loses the WHOLE payload to the error-placeholder path, not just the field. Upgrade the consumer before anything starts producing these fields.
+
+A merge carries the REPRESENTATIVE's claim for all five and never borrows, fills or escalates from another member of the same dedup group. Members may well describe the same defect, which is what dedup is for, but group membership does not establish it, so one member's claim is never treated as interchangeable with another's. One consequence is deliberate and worth knowing: a non-representative's `originClass: "reintroduced"` does not survive a merge.
 
 ### Mutability boundary
 

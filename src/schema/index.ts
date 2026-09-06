@@ -1,5 +1,7 @@
 export {
   DeferralKeySchema,
+  FindingOriginClassSchema,
+  FindingOriginSchema,
   LensFindingSchema,
   LensOutputSchema,
   LensStatusSchema,
@@ -7,6 +9,8 @@ export {
   SeveritySchema,
   SnippetSchema,
   type DeferralKey,
+  type FindingOrigin,
+  type FindingOriginClass,
   type LensFinding,
   type LensOutput,
   type LensStatus,
